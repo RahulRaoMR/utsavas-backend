@@ -168,25 +168,7 @@ router.get("/public", async (req, res) => {
   }
 });
 
-/* =====================================================
-   PUBLIC – SINGLE APPROVED HALL
-   ⚠ MUST BE BELOW /public
-===================================================== */
-router.get("/:id", async (req, res) => {
-  try {
-    const hall = await Hall.findById(req.params.id)
-      .populate("vendor", "businessName phone email");
 
-    if (!hall) {
-      return res.status(404).json({ message: "Hall not found" });
-    }
-
-    res.json(hall);
-  } catch (error) {
-    console.error("FETCH HALL ERROR ❌", error);
-    res.status(500).json({ message: "Failed to fetch hall" });
-  }
-});
 
 
 
@@ -232,40 +214,35 @@ router.put("/approve/:id", async (req, res) => {
    ADMIN – REJECT HALL
 ===================================================== */
 router.put("/reject/:id", async (req, res) => {
-  const hall = await Hall.findByIdAndUpdate(
-    req.params.id,
-    { status: "rejected" },
-    { new: true }
-  );
-
-  if (!hall) {
-    return res.status(404).json({ message: "Hall not found" });
-  }
-
-  res.json({
-    message: "Hall rejected ❌",
-    hall,
-  });
-});
-
-module.exports = router;
-
-
-router.get("/:id", async (req, res) => {
   try {
-    const hall = await Hall.findById(req.params.id);
+    const hall = await Hall.findByIdAndUpdate(
+      req.params.id,
+      { status: "rejected" },
+      { new: true }
+    );
 
     if (!hall) {
       return res.status(404).json({ message: "Hall not found" });
     }
 
-    res.json(hall);
+    res.json({
+      message: "Hall rejected ❌",
+      hall,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Server error" });
+    console.error("REJECT ERROR ❌", error);
+    res.status(500).json({ message: "Failed to reject hall" });
   }
 });
 
-// SEARCH HALLS
+
+module.exports = router;
+
+
+/* =====================================================
+   SEARCH HALLS
+   ⚠ MUST BE ABOVE /:id
+===================================================== */
 router.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
@@ -275,16 +252,106 @@ router.get("/search", async (req, res) => {
     }
 
     const halls = await Hall.find({
+      status: "approved",
       $or: [
         { hallName: { $regex: q, $options: "i" } },
         { "address.area": { $regex: q, $options: "i" } },
         { "address.city": { $regex: q, $options: "i" } },
-        { venueType: { $regex: q, $options: "i" } }, // wedding / banquet
+        { category: { $regex: q, $options: "i" } }
       ],
     }).limit(10);
 
     res.json(halls);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("SEARCH ERROR ❌", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+/* =====================================================
+   SEARCH HALLS BY NAME
+===================================================== */
+router.get("/search", async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q) {
+      return res.json([]);
+    }
+
+    const halls = await Hall.find({
+      hallName: { $regex: q, $options: "i" },
+      status: "approved"
+    });
+
+    res.json(halls);
+  } catch (error) {
+    console.error("SEARCH ERROR ❌", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+
+
+
+/* =====================================================
+   PUBLIC – SINGLE APPROVED HALL
+   ⚠ MUST BE BELOW /public
+===================================================== */
+router.get("/:id", async (req, res) => {
+  try {
+    const hall = await Hall.findById(req.params.id)
+      .populate("vendor", "businessName phone email");
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found" });
+    }
+
+    res.json(hall);
+  } catch (error) {
+    console.error("FETCH HALL ERROR ❌", error);
+    res.status(500).json({ message: "Failed to fetch hall" });
+  }
+});
+
+/* =========================
+   CREATE HALL
+========================= */
+router.post("/", async (req, res) => {
+  try {
+    const hall = new Hall(req.body);
+    await hall.save();
+
+    res.status(201).json({
+      message: "Hall created successfully ✅",
+      hall,
+    });
+  } catch (error) {
+    console.error("CREATE HALL ERROR ❌", error);
+    res.status(500).json({ message: "Failed to create hall" });
+  }
+});
+
+/* =========================
+   GET ALL HALLS
+========================= */
+router.get("/", async (req, res) => {
+  try {
+    const halls = await Hall.find();
+    res.json(halls);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch halls" });
+  }
+});
+
+/* =========================
+   GET SINGLE HALL
+========================= */
+router.get("/:id", async (req, res) => {
+  try {
+    const hall = await Hall.findById(req.params.id);
+    res.json(hall);
+  } catch (error) {
+    res.status(500).json({ message: "Hall not found" });
   }
 });

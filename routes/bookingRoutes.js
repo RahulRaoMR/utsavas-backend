@@ -1,12 +1,12 @@
 const express = require("express");
+const router = express.Router();
 const Booking = require("../models/Booking");
 const Hall = require("../models/Hall");
 
-const router = express.Router();
-
 /* =========================
-   CREATE BOOKING (PUBLIC)
+   CREATE BOOKING
 ========================= */
+
 router.post("/create", async (req, res) => {
   try {
     const {
@@ -15,111 +15,84 @@ router.post("/create", async (req, res) => {
       checkOut,
       eventType,
       guests,
-      name,
+      customerName,
       phone,
     } = req.body;
 
-    // Basic validation
-    if (!hallId || !checkIn || !checkOut || !name || !phone) {
+    console.log("Incoming booking data:", req.body);
+
+    // Validate required fields
+    if (
+      !hallId ||
+      !checkIn ||
+      !checkOut ||
+      !eventType ||
+      !customerName ||
+      !phone
+    ) {
       return res.status(400).json({
-        message: "Hall, check-in, check-out, name and phone are required",
+        message: "All required fields must be filled",
       });
     }
 
-    // Find hall & vendor
-    const hall = await Hall.findById(hallId).populate("vendor");
+    // Find hall
+    const hall = await Hall.findById(hallId);
+
     if (!hall) {
-      return res.status(404).json({ message: "Hall not found" });
+      return res.status(404).json({
+        message: "Hall not found",
+      });
     }
 
     // Create booking
-    const booking = await Booking.create({
-      hall: hall._id,
-      vendor: hall.vendor._id,
-      checkIn,
-      checkOut,
+    const booking = new Booking({
+      hall: hallId,
+      vendor: hall.vendor, // 🔥 VERY IMPORTANT
+      checkIn: new Date(checkIn),
+      checkOut: new Date(checkOut),
       eventType,
       guests,
-      customerName: name,
+      customerName,
       phone,
     });
+
+    await booking.save();
 
     res.status(201).json({
       message: "Booking created successfully",
       booking,
     });
   } catch (error) {
-    console.error("Create booking error:", error);
-    res.status(500).json({ message: error.message });
+    console.error("BOOKING CREATE ERROR ❌", error);
+    res.status(500).json({
+      message: "Server error while creating booking",
+    });
   }
 });
 
+
 /* =========================
-   VENDOR BOOKINGS
+   GET BOOKINGS FOR A VENDOR
 ========================= */
 router.get("/vendor/:vendorId", async (req, res) => {
   try {
+    const { vendorId } = req.params;
+
+    // Find halls belonging to this vendor
+    const halls = await Hall.find({ vendor: vendorId });
+
+    const hallIds = halls.map((hall) => hall._id);
+
+    // Find bookings for those halls
     const bookings = await Booking.find({
-      vendor: req.params.vendorId,
-    })
-      .populate("hall")
-      .sort({ createdAt: -1 });
+      hall: { $in: hallIds },
+    }).populate("hall", "hallName");
 
     res.json(bookings);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("GET VENDOR BOOKINGS ERROR ❌", error);
+    res.status(500).json({ message: "Failed to fetch bookings" });
   }
 });
-
-/* =========================
-   ADMIN – ALL BOOKINGS
-========================= */
-router.get("/all", async (req, res) => {
-  try {
-    const bookings = await Booking.find()
-      .populate("hall vendor")
-      .sort({ createdAt: -1 });
-
-    res.json(bookings);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-/* =========================
-   UPDATE BOOKING STATUS (VENDOR)
-========================= */
-router.patch("/status/:id", async (req, res) => {
-  try {
-    const { status } = req.body; // approved | rejected
-
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true }
-    );
-
-    res.json(booking);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-/* =========================
-   GET BOOKED DATES BY HALL
-========================= */
-router.get("/hall/:hallId", async (req, res) => {
-  try {
-    const bookings = await Booking.find({
-      hall: req.params.hallId,
-      status: { $in: ["pending", "approved"] },
-    }).select("checkIn checkOut");
-
-    res.json(bookings);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
 
 module.exports = router;

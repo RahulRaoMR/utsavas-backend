@@ -4,12 +4,25 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const path = require("path");
 
+
+
 dotenv.config();
 
 /* =========================
-   CREATE APP
+   CREATE APP FIRST
 ========================= */
 const app = express();
+
+/* =========================
+   ROUTES IMPORT
+========================= */
+const bookingRoutes = require("./routes/bookingRoutes");
+const hallRoutes = require("./routes/hallRoutes");
+const vendorRoutes = require("./routes/vendorRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const otpRoutes = require("./routes/otpRoutes");
+const authRoutes = require("./routes/authRoutes");
 
 /* =========================
    MIDDLEWARES
@@ -26,28 +39,25 @@ app.use(express.urlencoded({ extended: true }));
 
 /* =========================
    STATIC FILE SERVING
-   🔥 THIS IS CRITICAL
 ========================= */
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "uploads"))
-);
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* =========================
-   ROUTES
+   API ROUTES
 ========================= */
-app.use("/api/vendor", require("./routes/vendorRoutes"));
-app.use("/api/admin", require("./routes/adminRoutes"));
-app.use("/api/halls", require("./routes/hallRoutes"));
-app.use("/api/bookings", require("./routes/bookingRoutes"));
-app.use("/api/payment", require("./routes/paymentRoutes"));
-
+app.use("/api/vendor", vendorRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/halls", hallRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/payment", paymentRoutes);
+app.use("/api/otp", otpRoutes); 
+app.use("/api/auth", authRoutes);
 
 /* =========================
    TEST ROUTE
 ========================= */
 app.get("/", (req, res) => {
-  res.send("UTSAVAM Backend Running 🚀");
+  res.status(200).send("UTSAVAS Backend Running 🚀");
 });
 
 /* =========================
