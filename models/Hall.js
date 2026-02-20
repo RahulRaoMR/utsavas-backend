@@ -9,6 +9,7 @@ const hallSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Vendor",
       required: true,
+      index: true,
     },
 
     /* =========================
@@ -18,12 +19,15 @@ const hallSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      index: true,
     },
 
     category: {
       type: String,
       enum: ["wedding", "banquet", "party"],
       required: true,
+      lowercase: true,
+      index: true,
     },
 
     capacity: {
@@ -47,13 +51,47 @@ const hallSchema = new mongoose.Schema(
     },
 
     /* =========================
-       ADDRESS (LIKE SWIGGY / UBER)
+       ⭐⭐⭐ PRICE (UTSAVAM PREMIUM)
+    ========================= */
+    pricePerPlate: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
+
+    pricePerDay: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
+
+    pricePerEvent: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
+
+    /* =========================
+       ADDRESS (SEARCH CRITICAL)
     ========================= */
     address: {
       flat: { type: String, required: true },
       floor: { type: String },
-      area: { type: String, required: true },
-      city: { type: String, required: true },
+
+      area: {
+        type: String,
+        required: true,
+        trim: true,
+        index: true,
+      },
+
+      city: {
+        type: String,
+        required: true,
+        trim: true,
+        index: true,
+      },
+
       state: { type: String, required: true },
       pincode: { type: String, required: true },
       landmark: { type: String },
@@ -63,18 +101,13 @@ const hallSchema = new mongoose.Schema(
        MAP LOCATION
     ========================= */
     location: {
-      lat: {
-        type: Number,
-        required: true,
-      },
-      lng: {
-        type: Number,
-        required: true,
-      },
+      lat: { type: Number, required: true },
+      lng: { type: Number, required: true },
     },
 
     /* =========================
        FEATURES & POLICIES
+       (MATCHES YOUR FILTER UI)
     ========================= */
     features: {
       diningHall: { type: Boolean, default: false },
@@ -104,10 +137,21 @@ const hallSchema = new mongoose.Schema(
       type: String,
       enum: ["pending", "approved", "rejected"],
       default: "pending",
+      index: true,
     },
   },
   { timestamps: true }
 );
+
+/* =========================
+   🔥 COMPOUND INDEX (FAST SEARCH)
+========================= */
+hallSchema.index({
+  "address.city": 1,
+  "address.area": 1,
+  category: 1,
+  status: 1,
+});
 
 module.exports =
   mongoose.models.Hall || mongoose.model("Hall", hallSchema);

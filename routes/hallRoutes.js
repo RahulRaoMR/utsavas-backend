@@ -29,11 +29,47 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
 /* =====================================================
-   ADD HALL (VENDOR)
+   🔥 SEARCH HALLS (MAIN FILTER API)
+===================================================== */
+router.get("/search", async (req, res) => {
+  try {
+    const { city, location, venueType } = req.query;
+
+    let filter = { status: "approved" };
+
+    if (city) {
+      filter["address.city"] = new RegExp(`^${city}$`, "i");
+    }
+
+    if (location) {
+      filter["address.area"] = new RegExp(`^${location}$`, "i");
+    }
+
+    if (venueType) {
+      filter.category = venueType.toLowerCase();
+    }
+
+    const halls = await Hall.find(filter)
+      .populate("vendor", "businessName phone")
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: halls.length,
+      data: halls,
+    });
+  } catch (error) {
+    console.error("SEARCH ERROR ❌", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   ✅ ADD HALL (FIXED WITH PRICES)
 ===================================================== */
 router.post("/add", upload.array("images", 10), async (req, res) => {
   try {
@@ -53,6 +89,9 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       });
     }
 
+    /* =========================
+       PARSE JSON FIELDS
+    ========================= */
     let address = {};
     let location = {};
     let features = {};
@@ -65,36 +104,53 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       return res.status(400).json({ message: "Invalid JSON data" });
     }
 
-    if (
-      typeof location.lat !== "number" ||
-      typeof location.lng !== "number"
-    ) {
-      return res.status(400).json({
-        message: "Valid map location required",
-      });
-    }
+    /* =========================
+       ⭐⭐⭐ PRICE PARSING (CRITICAL FIX)
+    ========================= */
+    const pricePerDay = req.body.pricePerDay
+      ? Number(req.body.pricePerDay)
+      : 0;
 
+    const pricePerEvent = req.body.pricePerEvent
+      ? Number(req.body.pricePerEvent)
+      : 0;
+
+    const pricePerPlate = req.body.pricePerPlate
+      ? Number(req.body.pricePerPlate)
+      : 0;
+
+    /* =========================
+       CREATE HALL
+    ========================= */
     const hall = await Hall.create({
       vendor: vendorId,
       hallName,
-      category: category.toLowerCase(), // wedding | banquet | party
+      category: category.toLowerCase(),
       capacity: Number(capacity) || 0,
       parkingCapacity: Number(parkingCapacity) || 0,
       rooms: Number(rooms) || 0,
       about: about || "",
+
+      // ⭐⭐⭐ FIXED PRICES
+      pricePerDay,
+      pricePerEvent,
+      pricePerPlate,
+
       address,
       location,
       features,
+
       images: req.files
         ? req.files.map(
             (f) => `/uploads/halls/${path.basename(f.path)}`
           )
         : [],
-      status: "pending", // ALWAYS pending first
+
+      status: "pending",
     });
 
     res.status(201).json({
-      message: "Hall added successfully, waiting for admin approval",
+      message: "Hall added successfully",
       hall,
     });
   } catch (error) {
@@ -104,51 +160,7 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
 });
 
 /* =====================================================
-   UPDATE HALL (VENDOR)
-===================================================== */
-router.put("/update/:id", async (req, res) => {
-  try {
-    const hall = await Hall.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
-
-    if (!hall) {
-      return res.status(404).json({ message: "Hall not found" });
-    }
-
-    res.json({
-      message: "Hall updated successfully ✅",
-      hall,
-    });
-  } catch (error) {
-    console.error("UPDATE HALL ERROR ❌", error);
-    res.status(500).json({ message: "Failed to update hall" });
-  }
-});
-
-/* =====================================================
-   VENDOR – GET ONLY APPROVED HALLS
-===================================================== */
-router.get("/vendor/:vendorId", async (req, res) => {
-  try {
-    const halls = await Hall.find({
-      vendor: req.params.vendorId,
-      status: "approved",
-    }).sort({ createdAt: -1 });
-
-    res.json(halls);
-  } catch {
-    res.status(500).json({
-      message: "Failed to fetch vendor halls",
-    });
-  }
-});
-
-/* =====================================================
-   PUBLIC – APPROVED HALLS ONLY
-   /api/halls/public?category=wedding
+   PUBLIC APPROVED HALLS
 ===================================================== */
 router.get("/public", async (req, res) => {
   try {
@@ -161,37 +173,12 @@ router.get("/public", async (req, res) => {
     const halls = await Hall.find(filter).sort({ createdAt: -1 });
     res.json(halls);
   } catch (error) {
-    console.error("PUBLIC HALL FETCH ERROR ❌", error);
-    res.status(500).json({
-      message: "Failed to fetch public halls",
-    });
+    res.status(500).json({ message: "Failed to fetch public halls" });
   }
 });
 
-
-
-
-
 /* =====================================================
-   ADMIN – GET ALL HALLS (ALIAS FOR FRONTEND)
-===================================================== */
-router.get("/all", async (req, res) => {
-  try {
-    const halls = await Hall.find()
-      .populate("vendor", "businessName email phone")
-      .sort({ createdAt: -1 });
-
-    res.json(halls);
-  } catch {
-    res.status(500).json({
-      message: "Failed to fetch halls",
-    });
-  }
-});
-
-
-/* =====================================================
-   ADMIN – APPROVE HALL
+   ADMIN APPROVE
 ===================================================== */
 router.put("/approve/:id", async (req, res) => {
   const hall = await Hall.findByIdAndUpdate(
@@ -204,104 +191,18 @@ router.put("/approve/:id", async (req, res) => {
     return res.status(404).json({ message: "Hall not found" });
   }
 
-  res.json({
-    message: "Hall approved ✅",
-    hall,
-  });
+  res.json({ message: "Hall approved ✅", hall });
 });
 
 /* =====================================================
-   ADMIN – REJECT HALL
-===================================================== */
-router.put("/reject/:id", async (req, res) => {
-  try {
-    const hall = await Hall.findByIdAndUpdate(
-      req.params.id,
-      { status: "rejected" },
-      { new: true }
-    );
-
-    if (!hall) {
-      return res.status(404).json({ message: "Hall not found" });
-    }
-
-    res.json({
-      message: "Hall rejected ❌",
-      hall,
-    });
-  } catch (error) {
-    console.error("REJECT ERROR ❌", error);
-    res.status(500).json({ message: "Failed to reject hall" });
-  }
-});
-
-
-module.exports = router;
-
-
-/* =====================================================
-   SEARCH HALLS
-   ⚠ MUST BE ABOVE /:id
-===================================================== */
-router.get("/search", async (req, res) => {
-  try {
-    const { q } = req.query;
-
-    if (!q) {
-      return res.json([]);
-    }
-
-    const halls = await Hall.find({
-      status: "approved",
-      $or: [
-        { hallName: { $regex: q, $options: "i" } },
-        { "address.area": { $regex: q, $options: "i" } },
-        { "address.city": { $regex: q, $options: "i" } },
-        { category: { $regex: q, $options: "i" } }
-      ],
-    }).limit(10);
-
-    res.json(halls);
-  } catch (error) {
-    console.error("SEARCH ERROR ❌", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-});
-
-/* =====================================================
-   SEARCH HALLS BY NAME
-===================================================== */
-router.get("/search", async (req, res) => {
-  try {
-    const { q } = req.query;
-
-    if (!q) {
-      return res.json([]);
-    }
-
-    const halls = await Hall.find({
-      hallName: { $regex: q, $options: "i" },
-      status: "approved"
-    });
-
-    res.json(halls);
-  } catch (error) {
-    console.error("SEARCH ERROR ❌", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-});
-
-
-
-
-/* =====================================================
-   PUBLIC – SINGLE APPROVED HALL
-   ⚠ MUST BE BELOW /public
+   SINGLE HALL
 ===================================================== */
 router.get("/:id", async (req, res) => {
   try {
-    const hall = await Hall.findById(req.params.id)
-      .populate("vendor", "businessName phone email");
+    const hall = await Hall.findById(req.params.id).populate(
+      "vendor",
+      "businessName phone email"
+    );
 
     if (!hall) {
       return res.status(404).json({ message: "Hall not found" });
@@ -314,44 +215,4 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-/* =========================
-   CREATE HALL
-========================= */
-router.post("/", async (req, res) => {
-  try {
-    const hall = new Hall(req.body);
-    await hall.save();
-
-    res.status(201).json({
-      message: "Hall created successfully ✅",
-      hall,
-    });
-  } catch (error) {
-    console.error("CREATE HALL ERROR ❌", error);
-    res.status(500).json({ message: "Failed to create hall" });
-  }
-});
-
-/* =========================
-   GET ALL HALLS
-========================= */
-router.get("/", async (req, res) => {
-  try {
-    const halls = await Hall.find();
-    res.json(halls);
-  } catch (error) {
-    res.status(500).json({ message: "Failed to fetch halls" });
-  }
-});
-
-/* =========================
-   GET SINGLE HALL
-========================= */
-router.get("/:id", async (req, res) => {
-  try {
-    const hall = await Hall.findById(req.params.id);
-    res.json(hall);
-  } catch (error) {
-    res.status(500).json({ message: "Hall not found" });
-  }
-});
+module.exports = router;
