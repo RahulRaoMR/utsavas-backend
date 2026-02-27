@@ -2,6 +2,7 @@ const express = require("express");
 const Admin = require("../models/Admin");
 const Vendor = require("../models/Vendor");
 const Hall = require("../models/Hall");
+const Booking = require("../models/Booking");
 const generateToken = require("../utils/generateToken");
 
 const router = express.Router();
@@ -49,9 +50,7 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("ADMIN LOGIN ERROR ❌", error);
-    res.status(500).json({
-      message: "Server error",
-    });
+    res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -81,7 +80,7 @@ router.get("/dashboard-stats", async (req, res) => {
 });
 
 /* =========================
-   GET PENDING HALLS (ADMIN)
+   GET PENDING HALLS
 ========================= */
 router.get("/halls", async (req, res) => {
   try {
@@ -140,6 +139,89 @@ router.put("/halls/:id/reject", async (req, res) => {
     res.status(500).json({
       message: "Failed to reject hall",
     });
+  }
+});
+
+/* ======================================================
+   🗑️ CASCADE DELETE VENDOR — PRODUCTION SAFE
+====================================================== */
+router.delete("/vendors/:vendorId", async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    console.log("🗑️ Admin deleting vendor:", vendorId);
+
+    // ✅ check vendor exists
+    const vendor = await Vendor.findById(vendorId);
+    if (!vendor) {
+      return res.status(404).json({
+        message: "Vendor not found",
+      });
+    }
+
+    // ✅ find halls of vendor
+    const halls = await Hall.find({ vendor: vendorId });
+    const hallIds = halls.map((h) => h._id);
+
+    // ✅ delete ALL related bookings (single efficient query)
+    await Booking.deleteMany({
+      $or: [
+        { vendor: vendorId },
+        { hall: { $in: hallIds } },
+      ],
+    });
+
+    // ✅ delete halls
+    await Hall.deleteMany({ vendor: vendorId });
+
+    // ✅ delete vendor
+    await Vendor.findByIdAndDelete(vendorId);
+
+    console.log("✅ Vendor cascade deleted successfully");
+
+    res.json({
+      message: "Vendor and related data deleted successfully ✅",
+    });
+  } catch (error) {
+    console.error("DELETE VENDOR ERROR ❌", error);
+    res.status(500).json({
+      message: "Failed to delete vendor",
+    });
+  }
+});
+
+/* ======================================================
+   ADMIN — GET ALL BOOKINGS (CALENDAR READY)
+====================================================== */
+router.get("/bookings", async (req, res) => {
+  try {
+    const bookings = await Booking.find()
+      .populate("vendor", "businessName")
+      .populate("hall", "hallName")
+      .sort({ createdAt: -1 });
+
+    const formatted = bookings.map((b) => ({
+      _id: b._id,
+      customerName: b.customerName,
+      vendorName: b.vendor?.businessName || "N/A",
+      hallName: b.hall?.hallName || "N/A",
+
+      // ⭐ calendar
+      checkIn: b.checkIn,
+      checkOut: b.checkOut,
+
+      // ⭐ payment safe defaults
+      paymentMethod: b.paymentMethod || "venue",
+      paymentStatus: b.paymentStatus || "pending",
+      amount: b.amount || 0,
+
+      status: b.status,
+    }));
+
+    res.json(formatted);
+  } catch (err) {
+    console.error("ADMIN BOOKINGS ERROR ❌", err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 

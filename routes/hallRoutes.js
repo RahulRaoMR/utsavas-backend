@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const mongoose = require("mongoose");
 const Hall = require("../models/Hall");
 
 const router = express.Router();
@@ -69,7 +70,7 @@ router.get("/search", async (req, res) => {
 });
 
 /* =====================================================
-   ✅ ADD HALL (FIXED WITH PRICES)
+   ✅ ADD HALL
 ===================================================== */
 router.post("/add", upload.array("images", 10), async (req, res) => {
   try {
@@ -83,15 +84,20 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       vendorId,
     } = req.body;
 
+    console.log("📥 ADD HALL vendorId:", vendorId);
+
     if (!hallName || !category || !vendorId) {
       return res.status(400).json({
         message: "hallName, category and vendorId are required",
       });
     }
 
-    /* =========================
-       PARSE JSON FIELDS
-    ========================= */
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({
+        message: "Invalid vendorId",
+      });
+    }
+
     let address = {};
     let location = {};
     let features = {};
@@ -104,9 +110,6 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       return res.status(400).json({ message: "Invalid JSON data" });
     }
 
-    /* =========================
-       ⭐⭐⭐ PRICE PARSING (CRITICAL FIX)
-    ========================= */
     const pricePerDay = req.body.pricePerDay
       ? Number(req.body.pricePerDay)
       : 0;
@@ -119,35 +122,29 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       ? Number(req.body.pricePerPlate)
       : 0;
 
-    /* =========================
-       CREATE HALL
-    ========================= */
     const hall = await Hall.create({
-      vendor: vendorId,
+      vendor: new mongoose.Types.ObjectId(vendorId),
       hallName,
       category: category.toLowerCase(),
       capacity: Number(capacity) || 0,
       parkingCapacity: Number(parkingCapacity) || 0,
       rooms: Number(rooms) || 0,
       about: about || "",
-
-      // ⭐⭐⭐ FIXED PRICES
       pricePerDay,
       pricePerEvent,
       pricePerPlate,
-
       address,
       location,
       features,
-
       images: req.files
         ? req.files.map(
             (f) => `/uploads/halls/${path.basename(f.path)}`
           )
         : [],
-
       status: "pending",
     });
+
+    console.log("✅ Hall created for vendor:", vendorId);
 
     res.status(201).json({
       message: "Hall added successfully",
@@ -156,6 +153,38 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
   } catch (error) {
     console.error("ADD HALL ERROR ❌", error);
     res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+/* =====================================================
+   🔥✅ VENDOR APPROVED HALLS (NEW — CRITICAL FIX)
+   ⚠️ MUST BE ABOVE /:id
+===================================================== */
+router.get("/vendor/:vendorId", async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    console.log("📥 Vendor halls request for:", vendorId);
+
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendorId" });
+    }
+
+    const halls = await Hall.find({
+      vendor: new mongoose.Types.ObjectId(vendorId),
+      status: "approved",
+    }).sort({ createdAt: -1 });
+
+    console.log("✅ Approved halls found:", halls.length);
+
+    res.json({
+      success: true,
+      count: halls.length,
+      data: halls,
+    });
+  } catch (error) {
+    console.error("VENDOR HALLS ERROR ❌", error);
+    res.status(500).json({ message: "Server error" });
   }
 });
 

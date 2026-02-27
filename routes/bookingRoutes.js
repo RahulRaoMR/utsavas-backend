@@ -46,7 +46,7 @@ router.post("/create", async (req, res) => {
 
     const booking = new Booking({
       hall: hallId,
-      vendor: hall.vendor, // ⭐ VERY IMPORTANT
+      vendor: hall.vendor,
       checkIn: new Date(checkIn),
       checkOut: new Date(checkOut),
       eventType,
@@ -110,12 +110,11 @@ const updateStatusHandler = async (req, res) => {
   }
 };
 
-// ⭐ support BOTH
 router.patch("/status/:bookingId", updateStatusHandler);
 router.put("/status/:bookingId", updateStatusHandler);
 
 /* =========================
-   ✅ GET BOOKINGS FOR A VENDOR — FIXED
+   GET BOOKINGS FOR A VENDOR
 ========================= */
 router.get("/vendor/:vendorId", async (req, res) => {
   try {
@@ -123,21 +122,15 @@ router.get("/vendor/:vendorId", async (req, res) => {
 
     console.log("Fetching bookings for vendor:", vendorId);
 
-    // ✅ validate id
     if (!mongoose.Types.ObjectId.isValid(vendorId)) {
       return res.status(400).json({
         message: "Invalid vendor id",
       });
     }
 
-    // ✅ DIRECT QUERY (FAST + CORRECT)
-    const bookings = await Booking.find({
-      vendor: vendorId,
-    })
+    const bookings = await Booking.find({ vendor: vendorId })
       .populate("hall", "hallName")
       .sort({ createdAt: -1 });
-
-    console.log("Bookings found:", bookings.length);
 
     res.json(bookings);
   } catch (error) {
@@ -156,15 +149,51 @@ router.get("/hall/:hallId", async (req, res) => {
   try {
     const { hallId } = req.params;
 
-    const bookings = await Booking.find({
-      hall: hallId,
-    }).select("checkIn checkOut status");
+    const bookings = await Booking.find({ hall: hallId })
+      .select("checkIn checkOut status");
 
     res.json(bookings);
   } catch (error) {
     console.error("GET HALL BOOKINGS ERROR ❌", error);
     res.status(500).json({
       message: "Failed to fetch hall bookings",
+    });
+  }
+});
+
+/* =========================
+   ✅🔥 ADMIN — GET ALL BOOKINGS (FINAL FIX)
+========================= */
+router.get("/admin/bookings", async (req, res) => {
+  try {
+    console.log("🔥 ADMIN BOOKINGS FETCHED");
+
+    const bookings = await Booking.find()
+      .populate("hall", "hallName")
+      .populate("vendor", "businessName")
+      .sort({ createdAt: -1 });
+
+    // ⭐ CRITICAL: send calendar-ready data
+    const formatted = bookings.map((b) => ({
+      _id: b._id,
+      customerName: b.customerName,
+      phone: b.phone,
+      eventType: b.eventType,
+      guests: b.guests,
+      status: b.status,
+      checkIn: b.checkIn,     // ✅ REQUIRED
+      checkOut: b.checkOut,   // ✅ REQUIRED
+      hallName: b.hall?.hallName || "N/A",
+      vendorName: b.vendor?.businessName || "N/A",
+    }));
+
+    console.log("Admin bookings count:", formatted.length);
+
+    res.json(formatted);
+  } catch (error) {
+    console.error("ADMIN BOOKINGS ERROR ❌", error);
+    res.status(500).json({
+      message: "Failed to fetch admin bookings",
     });
   }
 });

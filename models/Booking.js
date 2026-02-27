@@ -54,19 +54,42 @@ const bookingSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // 🔥 IMPORTANT: match frontend colors
+    // 🔥 BOOKING STATUS (vendor/admin decision)
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
       default: "pending",
       index: true,
     },
+
+    /* =========================
+       ⭐ PAYMENT FIELDS (NEW)
+    ========================= */
+
+    paymentMethod: {
+      type: String,
+      enum: ["online", "pay_at_venue"],
+      default: "pay_at_venue",
+      index: true,
+    },
+
+    paymentStatus: {
+      type: String,
+      enum: ["pending", "paid", "failed"],
+      default: "pending",
+      index: true,
+    },
+
+    amount: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );
 
 /* ===================================
-   🔥 Prevent double booking (VERY IMPORTANT)
+   🔥 Prevent double booking (soft)
 =================================== */
 bookingSchema.index(
   { hall: 1, checkIn: 1, checkOut: 1 },

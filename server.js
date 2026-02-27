@@ -4,12 +4,10 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const path = require("path");
 
-
-
 dotenv.config();
 
 /* =========================
-   CREATE APP FIRST
+   CREATE APP
 ========================= */
 const app = express();
 
@@ -38,23 +36,28 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* =========================
-   STATIC FILE SERVING
+   STATIC FILES
 ========================= */
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* =========================
    API ROUTES
+   ⚠️ ORDER MATTERS
 ========================= */
+
+// Auth & OTP
+app.use("/api/auth", authRoutes);
+app.use("/api/otp", otpRoutes);
+
+// Core modules
 app.use("/api/vendor", vendorRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/halls", hallRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payment", paymentRoutes);
-app.use("/api/otp", otpRoutes); 
-app.use("/api/auth", authRoutes);
 
 /* =========================
-   TEST ROUTE
+   HEALTH CHECK
 ========================= */
 app.get("/", (req, res) => {
   res.status(200).send("UTSAVAS Backend Running 🚀");
@@ -69,6 +72,7 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB Connected");
+
     app.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
     });

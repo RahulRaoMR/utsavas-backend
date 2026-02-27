@@ -1,5 +1,8 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const Vendor = require("../models/Vendor");
+const Hall = require("../models/Hall");
+const Booking = require("../models/Booking");
 
 const router = express.Router();
 
@@ -51,7 +54,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // CREATE VENDOR (password hashed in model)
+    // CREATE VENDOR
     await Vendor.create({
       businessName,
       ownerName,
@@ -64,7 +67,8 @@ router.post("/register", async (req, res) => {
     });
 
     res.status(201).json({
-      message: "Vendor registered successfully. Waiting for admin approval.",
+      message:
+        "Vendor registered successfully. Waiting for admin approval.",
     });
   } catch (error) {
     console.error("REGISTER ERROR ❌", error);
@@ -206,6 +210,50 @@ router.get("/stats", async (req, res) => {
   } catch (err) {
     res.status(500).json({
       message: "Failed to load stats",
+    });
+  }
+});
+
+/* =========================
+   🔥 DELETE VENDOR (CASCADE)
+========================= */
+router.delete("/delete/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log("🗑 Deleting vendor:", id);
+
+    // ✅ validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "Invalid vendor id",
+      });
+    }
+
+    // 1️⃣ delete bookings
+    await Booking.deleteMany({ vendor: id });
+
+    // 2️⃣ delete halls
+    await Hall.deleteMany({ vendor: id });
+
+    // 3️⃣ delete vendor
+    const deletedVendor = await Vendor.findByIdAndDelete(id);
+
+    if (!deletedVendor) {
+      return res.status(404).json({
+        message: "Vendor not found",
+      });
+    }
+
+    console.log("✅ Vendor cascade deleted");
+
+    res.json({
+      message: "Vendor and related data deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE VENDOR ERROR ❌", error);
+    res.status(500).json({
+      message: "Failed to delete vendor",
     });
   }
 });
