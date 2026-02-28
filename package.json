@@ -10,6 +10,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.999.0",
     "@fullcalendar/interaction": "^6.1.20",
     "axios": "^1.13.5",
     "bcrypt": "^6.0.0",
@@ -22,6 +23,7 @@
     "leaflet": "^1.9.4",
     "mongoose": "^9.1.5",
     "multer": "^2.0.2",
+    "multer-s3": "^3.0.1",
     "razorpay": "^2.9.6",
     "react-leaflet": "^5.0.0"
   },

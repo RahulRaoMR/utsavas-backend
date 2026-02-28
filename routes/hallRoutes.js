@@ -1,37 +1,11 @@
 const express = require("express");
-const multer = require("multer");
-const fs = require("fs");
-const path = require("path");
 const mongoose = require("mongoose");
 const Hall = require("../models/Hall");
 
+// ✅ NEW — S3 upload middleware
+const upload = require("../middleware/uploadToS3");
+
 const router = express.Router();
-
-/* =========================
-   ENSURE UPLOAD FOLDER
-========================= */
-const uploadDir = path.join(__dirname, "..", "uploads", "halls");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-/* =========================
-   MULTER CONFIG
-========================= */
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const safeName = file.originalname
-      .replace(/\s+/g, "_")
-      .replace(/[^a-zA-Z0-9._-]/g, "");
-    cb(null, Date.now() + "-" + safeName);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-});
 
 /* =====================================================
    🔥 SEARCH HALLS (MAIN FILTER API)
@@ -70,7 +44,7 @@ router.get("/search", async (req, res) => {
 });
 
 /* =====================================================
-   ✅ ADD HALL
+   ✅ ADD HALL (NOW UPLOADS TO S3)
 ===================================================== */
 router.post("/add", upload.array("images", 10), async (req, res) => {
   try {
@@ -122,6 +96,11 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       ? Number(req.body.pricePerPlate)
       : 0;
 
+    // ✅🔥 S3 IMAGE URLS (CRITICAL CHANGE)
+    const imageUrls = req.files
+      ? req.files.map((f) => f.location)
+      : [];
+
     const hall = await Hall.create({
       vendor: new mongoose.Types.ObjectId(vendorId),
       hallName,
@@ -136,11 +115,7 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       address,
       location,
       features,
-      images: req.files
-        ? req.files.map(
-            (f) => `/uploads/halls/${path.basename(f.path)}`
-          )
-        : [],
+      images: imageUrls, // ✅ NOW S3 URLs
       status: "pending",
     });
 
@@ -157,8 +132,7 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
 });
 
 /* =====================================================
-   🔥✅ VENDOR APPROVED HALLS (NEW — CRITICAL FIX)
-   ⚠️ MUST BE ABOVE /:id
+   🔥✅ VENDOR APPROVED HALLS
 ===================================================== */
 router.get("/vendor/:vendorId", async (req, res) => {
   try {
