@@ -8,7 +8,7 @@ const path = require("path");
 const app = express();
 
 /* =========================
-   CORS CONFIG (PRODUCTION SAFE)
+   CORS CONFIG (SAFE)
 ========================= */
 
 const allowedOrigins = [
@@ -22,26 +22,19 @@ app.use(
   cors({
     origin: function (origin, callback) {
 
-      // allow requests with no origin (mobile apps / postman)
+      // allow requests with no origin (Postman, mobile apps)
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.indexOf(origin) !== -1) {
+      if (allowedOrigins.includes(origin)) {
         return callback(null, true);
-      } else {
-        return callback(null, true); // allow temporarily
       }
+
+      // allow temporarily
+      return callback(null, true);
     },
-    credentials: true,
-    methods: ["GET","POST","PUT","DELETE","OPTIONS"],
-    allowedHeaders: ["Content-Type","Authorization"]
+    credentials: true
   })
 );
-
-/* =========================
-   HANDLE PREFLIGHT
-========================= */
-
-app.options("*", cors());
 
 /* =========================
    MIDDLEWARES
@@ -72,25 +65,13 @@ const authRoutes = require("./routes/authRoutes");
    API ROUTES
 ========================= */
 
-// auth
 app.use("/api/auth", authRoutes);
-
-// otp
 app.use("/api/otp", otpRoutes);
 
-// vendor
 app.use("/api/vendor", vendorRoutes);
-
-// admin
 app.use("/api/admin", adminRoutes);
-
-// halls
 app.use("/api/halls", hallRoutes);
-
-// bookings
 app.use("/api/bookings", bookingRoutes);
-
-// payment
 app.use("/api/payment", paymentRoutes);
 
 /* =========================
@@ -119,7 +100,5 @@ mongoose
 
   })
   .catch((err) => {
-
     console.error("❌ MongoDB connection error:", err);
-
   });
