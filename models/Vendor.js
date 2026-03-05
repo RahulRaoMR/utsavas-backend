@@ -8,11 +8,13 @@ const vendorSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+
     ownerName: {
       type: String,
       required: true,
       trim: true,
     },
+
     email: {
       type: String,
       required: true,
@@ -20,51 +22,65 @@ const vendorSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+
     phone: {
       type: String,
       required: true,
       unique: true,
       trim: true,
     },
+
     city: {
       type: String,
       required: true,
       trim: true,
     },
+
     serviceType: {
       type: String,
       required: true,
       enum: ["wedding", "banquet", "party", "service"],
     },
+
     password: {
       type: String,
       required: true,
     },
+
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
       default: "pending",
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
 
 /* =========================
-   🔐 HASH PASSWORD BEFORE SAVE
-   (ASYNC SAFE – NO next())
+   HASH PASSWORD BEFORE SAVE
 ========================= */
-vendorSchema.pre("save", async function () {
-  if (!this.isModified("password")) return;
+vendorSchema.pre("save", async function (next) {
+  try {
+    if (!this.isModified("password")) {
+      return next();
+    }
 
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 /* =========================
-   🔑 PASSWORD COMPARE METHOD
+   COMPARE PASSWORD
 ========================= */
 vendorSchema.methods.comparePassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+  return bcrypt.compare(enteredPassword, this.password);
 };
 
 module.exports = mongoose.model("Vendor", vendorSchema);
