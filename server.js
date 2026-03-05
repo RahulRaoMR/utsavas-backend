@@ -1,10 +1,8 @@
+require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
-const dotenv = require("dotenv");
 const cors = require("cors");
 const path = require("path");
-
-dotenv.config();
 
 /* =========================
    CREATE APP
@@ -42,7 +40,6 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* =========================
    API ROUTES
-   ⚠️ ORDER MATTERS
 ========================= */
 
 // Auth & OTP
@@ -60,23 +57,24 @@ app.use("/api/payment", paymentRoutes);
    HEALTH CHECK
 ========================= */
 app.get("/", (req, res) => {
-  res.status(200).send("UTSAVAS Backend Running 🚀");
+  res.status(200).send("UTSAVAM Backend Running 🚀");
 });
 
 /* =========================
-   DATABASE + SERVER
+   DATABASE CONNECTION
 ========================= */
-const PORT = process.env.PORT || 5000;
 
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
-    console.log("✅ MongoDB Connected");
+    console.log("✅ MongoDB Atlas Connected");
+
+    const PORT = process.env.PORT || 5000;
 
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
+    console.error("❌ MongoDB connection error:", err);
   });
