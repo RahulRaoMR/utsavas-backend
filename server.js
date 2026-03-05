@@ -10,6 +10,33 @@ const path = require("path");
 const app = express();
 
 /* =========================
+   CORS CONFIG
+========================= */
+app.use(
+  cors({
+    origin: [
+      "http://localhost:3000",
+      "https://utsavas.vercel.app",
+      "https://www.utsavas.com",
+      "https://utsavas.com",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
+
+/* =========================
+   MIDDLEWARES
+========================= */
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/* =========================
+   STATIC FILES
+========================= */
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+/* =========================
    ROUTES IMPORT
 ========================= */
 const bookingRoutes = require("./routes/bookingRoutes");
@@ -19,24 +46,6 @@ const adminRoutes = require("./routes/adminRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const otpRoutes = require("./routes/otpRoutes");
 const authRoutes = require("./routes/authRoutes");
-
-/* =========================
-   MIDDLEWARES
-========================= */
-app.use(
-  cors({
-    origin: "http://localhost:3000",
-    credentials: true,
-  })
-);
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-/* =========================
-   STATIC FILES
-========================= */
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* =========================
    API ROUTES
@@ -63,7 +72,6 @@ app.get("/", (req, res) => {
 /* =========================
    DATABASE CONNECTION
 ========================= */
-
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
