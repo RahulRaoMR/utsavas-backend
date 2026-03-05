@@ -90,6 +90,7 @@ router.post("/register", async (req, res) => {
 
   } catch (err) {
     console.error("REGISTER ERROR:", err);
+
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -102,44 +103,29 @@ router.post("/register", async (req, res) => {
 ========================= */
 router.post("/login", async (req, res) => {
   try {
-    let { email, phone, emailOrPhone, password } = req.body;
 
-    if (!password) {
-      return res.json({
+    const { email, phone, identifier, emailOrPhone, password } = req.body;
+
+    const loginValue = email || phone || identifier || emailOrPhone;
+
+    if (!loginValue || !password) {
+      return res.status(400).json({
         success: false,
-        message: "Password required",
+        message: "Email/Phone and password required",
       });
     }
 
-    let query = {};
+    let user;
 
-    // login with email
-    if (email) {
-      query.email = email.toLowerCase().trim();
-    }
-
-    // login with phone
-    else if (phone) {
-      query.phone = normalizePhone(phone);
-    }
-
-    // login with emailOrPhone
-    else if (emailOrPhone) {
-      if (emailOrPhone.includes("@")) {
-        query.email = emailOrPhone.toLowerCase();
-      } else {
-        query.phone = normalizePhone(emailOrPhone);
-      }
-    }
-
-    else {
-      return res.json({
-        success: false,
-        message: "Email or phone required",
+    if (loginValue.includes("@")) {
+      user = await User.findOne({
+        email: loginValue.toLowerCase().trim(),
+      });
+    } else {
+      user = await User.findOne({
+        phone: normalizePhone(loginValue),
       });
     }
-
-    const user = await User.findOne(query);
 
     if (!user) {
       return res.json({
@@ -170,11 +156,14 @@ router.post("/login", async (req, res) => {
     });
 
   } catch (err) {
+
     console.error("LOGIN ERROR:", err);
+
     res.status(500).json({
       success: false,
       message: "Server error",
     });
+
   }
 });
 
@@ -183,6 +172,7 @@ router.post("/login", async (req, res) => {
 ========================= */
 router.post("/forgot-password/send-otp", async (req, res) => {
   try {
+
     const { phone } = req.body;
 
     const cleanPhone = normalizePhone(phone);
@@ -214,11 +204,20 @@ router.post("/forgot-password/send-otp", async (req, res) => {
       },
     });
 
-    res.json({ success: true, message: "OTP sent" });
+    res.json({
+      success: true,
+      message: "OTP sent",
+    });
 
   } catch (err) {
+
     console.error("RESET OTP ERROR:", err.response?.data || err.message);
-    res.status(500).json({ success: false });
+
+    res.status(500).json({
+      success: false,
+      message: "OTP send failed",
+    });
+
   }
 });
 
@@ -226,32 +225,50 @@ router.post("/forgot-password/send-otp", async (req, res) => {
    VERIFY RESET OTP
 ========================= */
 router.post("/forgot-password/verify-otp", (req, res) => {
+
   const { phone, otp } = req.body;
 
   const cleanPhone = normalizePhone(phone);
+
   const data = resetOtpStore.get(cleanPhone);
 
   if (!data) {
-    return res.json({ success: false, message: "OTP not found" });
+    return res.json({
+      success: false,
+      message: "OTP not found",
+    });
   }
 
   if (Date.now() > data.expires) {
+
     resetOtpStore.delete(cleanPhone);
-    return res.json({ success: false, message: "OTP expired" });
+
+    return res.json({
+      success: false,
+      message: "OTP expired",
+    });
   }
 
   if (Number(otp) !== data.otp) {
-    return res.json({ success: false, message: "Invalid OTP" });
+    return res.json({
+      success: false,
+      message: "Invalid OTP",
+    });
   }
 
-  res.json({ success: true });
+  res.json({
+    success: true,
+  });
+
 });
 
 /* =========================
    RESET PASSWORD
 ========================= */
 router.post("/forgot-password/reset", async (req, res) => {
+
   try {
+
     const { phone, newPassword } = req.body;
 
     const cleanPhone = normalizePhone(phone);
@@ -259,22 +276,36 @@ router.post("/forgot-password/reset", async (req, res) => {
     const user = await User.findOne({ phone: cleanPhone });
 
     if (!user) {
-      return res.json({ success: false, message: "User not found" });
+      return res.json({
+        success: false,
+        message: "User not found",
+      });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     user.password = hashedPassword;
+
     await user.save();
 
     resetOtpStore.delete(cleanPhone);
 
-    res.json({ success: true, message: "Password updated" });
+    res.json({
+      success: true,
+      message: "Password updated",
+    });
 
   } catch (err) {
+
     console.error("RESET PASSWORD ERROR:", err);
-    res.status(500).json({ success: false });
+
+    res.status(500).json({
+      success: false,
+      message: "Password reset failed",
+    });
+
   }
+
 });
 
 module.exports = router;
