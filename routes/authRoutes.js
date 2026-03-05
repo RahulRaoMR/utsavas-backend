@@ -6,18 +6,19 @@ const User = require("../models/User");
 
 const router = express.Router();
 
-// temporary store for reset OTP
+/* =========================
+   TEMP STORE FOR RESET OTP
+========================= */
 const resetOtpStore = new Map();
 
 /* =========================
-   🔧 PHONE NORMALIZER
+   PHONE NORMALIZER
 ========================= */
 const normalizePhone = (phone) => {
   if (!phone) return phone;
 
   let p = phone.toString().replace(/\D/g, "");
 
-  // if user enters 10 digit → add country code
   if (p.length === 10) {
     p = "91" + p;
   }
@@ -26,7 +27,7 @@ const normalizePhone = (phone) => {
 };
 
 /* =========================
-   ✅ REGISTER USER
+   REGISTER USER
 ========================= */
 router.post("/register", async (req, res) => {
   try {
@@ -51,7 +52,6 @@ router.post("/register", async (req, res) => {
     email = email.toLowerCase().trim();
     const cleanPhone = normalizePhone(phone);
 
-    // 🔍 check existing
     const existing = await User.findOne({
       $or: [{ email }, { phone: cleanPhone }],
     });
@@ -63,10 +63,8 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // 🔐 hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 👤 create user
     const user = await User.create({
       firstName,
       lastName,
@@ -78,7 +76,6 @@ router.post("/register", async (req, res) => {
       password: hashedPassword,
     });
 
-    // 🎫 token
     const token = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
@@ -90,6 +87,7 @@ router.post("/register", async (req, res) => {
       token,
       user,
     });
+
   } catch (err) {
     console.error("REGISTER ERROR:", err);
     res.status(500).json({
@@ -100,30 +98,45 @@ router.post("/register", async (req, res) => {
 });
 
 /* =========================
-   ✅ LOGIN USER (EMAIL OR PHONE)
+   LOGIN USER
 ========================= */
 router.post("/login", async (req, res) => {
   try {
-    let { emailOrPhone, password } = req.body;
+    let { email, phone, emailOrPhone, password } = req.body;
 
-    if (!emailOrPhone || !password) {
-      return res.status(400).json({
+    if (!password) {
+      return res.json({
         success: false,
-        message: "Email/Phone and password required",
+        message: "Password required",
       });
     }
 
-    emailOrPhone = emailOrPhone.toString().trim();
-
     let query = {};
 
-    // ✅ EMAIL LOGIN
-    if (emailOrPhone.includes("@")) {
-      query.email = emailOrPhone.toLowerCase();
-    } else {
-      // ✅ PHONE LOGIN (AUTO HANDLE 91)
-      const cleanPhone = normalizePhone(emailOrPhone);
-      query.phone = cleanPhone;
+    // login with email
+    if (email) {
+      query.email = email.toLowerCase().trim();
+    }
+
+    // login with phone
+    else if (phone) {
+      query.phone = normalizePhone(phone);
+    }
+
+    // login with emailOrPhone
+    else if (emailOrPhone) {
+      if (emailOrPhone.includes("@")) {
+        query.email = emailOrPhone.toLowerCase();
+      } else {
+        query.phone = normalizePhone(emailOrPhone);
+      }
+    }
+
+    else {
+      return res.json({
+        success: false,
+        message: "Email or phone required",
+      });
     }
 
     const user = await User.findOne(query);
@@ -135,7 +148,6 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // 🔐 password check
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
@@ -145,7 +157,6 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // 🎫 token
     const token = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
@@ -157,6 +168,7 @@ router.post("/login", async (req, res) => {
       token,
       user,
     });
+
   } catch (err) {
     console.error("LOGIN ERROR:", err);
     res.status(500).json({
@@ -167,7 +179,7 @@ router.post("/login", async (req, res) => {
 });
 
 /* =========================
-   🔐 SEND RESET OTP
+   SEND RESET OTP
 ========================= */
 router.post("/forgot-password/send-otp", async (req, res) => {
   try {
@@ -203,6 +215,7 @@ router.post("/forgot-password/send-otp", async (req, res) => {
     });
 
     res.json({ success: true, message: "OTP sent" });
+
   } catch (err) {
     console.error("RESET OTP ERROR:", err.response?.data || err.message);
     res.status(500).json({ success: false });
@@ -210,7 +223,7 @@ router.post("/forgot-password/send-otp", async (req, res) => {
 });
 
 /* =========================
-   🔐 VERIFY RESET OTP
+   VERIFY RESET OTP
 ========================= */
 router.post("/forgot-password/verify-otp", (req, res) => {
   const { phone, otp } = req.body;
@@ -235,7 +248,7 @@ router.post("/forgot-password/verify-otp", (req, res) => {
 });
 
 /* =========================
-   🔐 RESET PASSWORD
+   RESET PASSWORD
 ========================= */
 router.post("/forgot-password/reset", async (req, res) => {
   try {
@@ -257,6 +270,7 @@ router.post("/forgot-password/reset", async (req, res) => {
     resetOtpStore.delete(cleanPhone);
 
     res.json({ success: true, message: "Password updated" });
+
   } catch (err) {
     console.error("RESET PASSWORD ERROR:", err);
     res.status(500).json({ success: false });

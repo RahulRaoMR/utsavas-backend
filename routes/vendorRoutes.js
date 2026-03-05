@@ -1,5 +1,8 @@
 const express = require("express");
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+
 const Vendor = require("../models/Vendor");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
@@ -10,7 +13,7 @@ const router = express.Router();
    TEST ROUTE
 ========================= */
 router.get("/test", (req, res) => {
-  res.json({ message: "Vendor route OK ✅" });
+  res.json({ success: true, message: "Vendor route OK ✅" });
 });
 
 /* =========================
@@ -28,7 +31,6 @@ router.post("/register", async (req, res) => {
       password,
     } = req.body;
 
-    // BASIC VALIDATION
     if (
       !businessName ||
       !ownerName ||
@@ -39,47 +41,46 @@ router.post("/register", async (req, res) => {
       !password
     ) {
       return res.status(400).json({
+        success: false,
         message: "All fields are required",
       });
     }
 
-    // CHECK DUPLICATE EMAIL / PHONE
     const existingVendor = await Vendor.findOne({
       $or: [{ email }, { phone }],
     });
 
     if (existingVendor) {
       return res.status(400).json({
-        message: "Vendor with this email or phone already exists",
+        success: false,
+        message: "Vendor already exists",
       });
     }
 
-    // CREATE VENDOR
-    await Vendor.create({
+    // 🔐 HASH PASSWORD
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const vendor = await Vendor.create({
       businessName,
       ownerName,
       phone,
       email,
       city,
       serviceType,
-      password,
+      password: hashedPassword,
       status: "pending",
     });
 
     res.status(201).json({
-      message:
-        "Vendor registered successfully. Waiting for admin approval.",
+      success: true,
+      message: "Vendor registered successfully. Waiting for admin approval.",
+      vendor,
     });
   } catch (error) {
     console.error("REGISTER ERROR ❌", error);
 
-    if (error.code === 11000) {
-      return res.status(400).json({
-        message: "Email or phone already registered",
-      });
-    }
-
     res.status(500).json({
+      success: false,
       message: "Internal server error",
     });
   }
@@ -94,6 +95,7 @@ router.post("/login", async (req, res) => {
 
     if (!identifier || !password) {
       return res.status(400).json({
+        success: false,
         message: "Email/Phone and password required",
       });
     }
@@ -104,27 +106,39 @@ router.post("/login", async (req, res) => {
 
     if (!vendor) {
       return res.status(401).json({
+        success: false,
         message: "Invalid credentials",
       });
     }
 
-    // BLOCK LOGIN IF NOT APPROVED
     if (vendor.status !== "approved") {
       return res.status(403).json({
+        success: false,
         message: "Account not approved by admin yet",
       });
     }
 
-    const isMatch = await vendor.comparePassword(password);
+    // 🔐 PASSWORD CHECK
+    const isMatch = await bcrypt.compare(password, vendor.password);
 
     if (!isMatch) {
       return res.status(401).json({
+        success: false,
         message: "Invalid credentials",
       });
     }
 
+    // 🔑 TOKEN
+    const token = jwt.sign(
+      { id: vendor._id },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
     res.json({
-      message: "Login successful ✅",
+      success: true,
+      message: "Login successful",
+      token,
       vendor: {
         _id: vendor._id,
         businessName: vendor.businessName,
@@ -135,7 +149,9 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("LOGIN ERROR ❌", error);
+
     res.status(500).json({
+      success: false,
       message: "Internal server error",
     });
   }
@@ -147,16 +163,21 @@ router.post("/login", async (req, res) => {
 router.get("/all", async (req, res) => {
   try {
     const vendors = await Vendor.find().sort({ createdAt: -1 });
-    res.json(vendors);
+
+    res.json({
+      success: true,
+      vendors,
+    });
   } catch (err) {
     res.status(500).json({
+      success: false,
       message: "Failed to fetch vendors",
     });
   }
 });
 
 /* =========================
-   ADMIN – UPDATE VENDOR STATUS
+   ADMIN – UPDATE STATUS
 ========================= */
 router.put("/status/:id", async (req, res) => {
   try {
@@ -164,6 +185,7 @@ router.put("/status/:id", async (req, res) => {
 
     if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({
+        success: false,
         message: "Invalid status",
       });
     }
@@ -176,16 +198,19 @@ router.put("/status/:id", async (req, res) => {
 
     if (!vendor) {
       return res.status(404).json({
+        success: false,
         message: "Vendor not found",
       });
     }
 
     res.json({
-      message: "Vendor status updated ✅",
+      success: true,
+      message: "Vendor status updated",
       vendor,
     });
   } catch (err) {
     res.status(500).json({
+      success: false,
       message: "Failed to update status",
     });
   }
@@ -202,6 +227,7 @@ router.get("/stats", async (req, res) => {
     const rejected = await Vendor.countDocuments({ status: "rejected" });
 
     res.json({
+      success: true,
       total,
       pending,
       approved,
@@ -209,50 +235,47 @@ router.get("/stats", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({
+      success: false,
       message: "Failed to load stats",
     });
   }
 });
 
 /* =========================
-   🔥 DELETE VENDOR (CASCADE)
+   DELETE VENDOR (CASCADE)
 ========================= */
 router.delete("/delete/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    console.log("🗑 Deleting vendor:", id);
-
-    // ✅ validate ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
+        success: false,
         message: "Invalid vendor id",
       });
     }
 
-    // 1️⃣ delete bookings
     await Booking.deleteMany({ vendor: id });
-
-    // 2️⃣ delete halls
     await Hall.deleteMany({ vendor: id });
 
-    // 3️⃣ delete vendor
     const deletedVendor = await Vendor.findByIdAndDelete(id);
 
     if (!deletedVendor) {
       return res.status(404).json({
+        success: false,
         message: "Vendor not found",
       });
     }
 
-    console.log("✅ Vendor cascade deleted");
-
     res.json({
+      success: true,
       message: "Vendor and related data deleted successfully",
     });
   } catch (error) {
     console.error("DELETE VENDOR ERROR ❌", error);
+
     res.status(500).json({
+      success: false,
       message: "Failed to delete vendor",
     });
   }
