@@ -21,15 +21,22 @@ router.get("/test", (req, res) => {
 ========================= */
 router.post("/register", async (req, res) => {
   try {
-    const {
+    let {
       businessName,
       ownerName,
       phone,
       email,
       city,
       serviceType,
-      password,
+      password
     } = req.body;
+
+    businessName = businessName?.toString().trim();
+    ownerName = ownerName?.toString().trim();
+    phone = phone?.toString().trim();
+    email = email?.toString().toLowerCase().trim();
+    city = city?.toString().trim();
+    serviceType = serviceType?.toString().trim().toLowerCase();
 
     if (
       !businessName ||
@@ -42,47 +49,70 @@ router.post("/register", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required",
+        message: "All fields are required"
+      });
+    }
+
+    if (!["wedding", "banquet", "party", "service"].includes(serviceType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid service type"
       });
     }
 
     const existingVendor = await Vendor.findOne({
-      $or: [{ email }, { phone }],
+      $or: [{ email }, { phone }]
     });
 
     if (existingVendor) {
       return res.status(400).json({
         success: false,
-        message: "Vendor already exists",
+        message: "Vendor already exists"
       });
     }
 
-    // 🔐 HASH PASSWORD
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const vendor = await Vendor.create({
+    const vendor = new Vendor({
       businessName,
       ownerName,
       phone,
       email,
       city,
       serviceType,
-      password: hashedPassword,
-      status: "pending",
+      password,
+      status: "pending"
     });
+
+    await vendor.save();
 
     res.status(201).json({
       success: true,
       message: "Vendor registered successfully. Waiting for admin approval.",
-      vendor,
+      vendor
     });
+
   } catch (error) {
-    console.error("REGISTER ERROR ❌", error);
+    if (error?.code === 11000) {
+      const duplicateField = Object.keys(error.keyPattern || {})[0] || "field";
+      return res.status(409).json({
+        success: false,
+        message: `${duplicateField} already exists`
+      });
+    }
+
+    if (error?.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    console.error("REGISTER ERROR:", error?.message || error);
 
     res.status(500).json({
       success: false,
-      message: "Internal server error",
+      message: "Internal server error"
     });
+
   }
 });
 
@@ -91,44 +121,46 @@ router.post("/register", async (req, res) => {
 ========================= */
 router.post("/login", async (req, res) => {
   try {
+
     const { identifier, password } = req.body;
 
     if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email/Phone and password required",
+        message: "Email/Phone and password required"
       });
     }
 
     const vendor = await Vendor.findOne({
-      $or: [{ email: identifier }, { phone: identifier }],
+      $or: [
+        { email: identifier },
+        { phone: identifier }
+      ]
     });
 
     if (!vendor) {
       return res.status(401).json({
         success: false,
-        message: "Invalid credentials",
+        message: "Invalid credentials"
       });
     }
 
     if (vendor.status !== "approved") {
       return res.status(403).json({
         success: false,
-        message: "Account not approved by admin yet",
+        message: "Account not approved by admin yet"
       });
     }
 
-    // 🔐 PASSWORD CHECK
     const isMatch = await bcrypt.compare(password, vendor.password);
 
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: "Invalid credentials",
+        message: "Invalid credentials"
       });
     }
 
-    // 🔑 TOKEN
     const token = jwt.sign(
       { id: vendor._id },
       process.env.JWT_SECRET,
@@ -144,16 +176,19 @@ router.post("/login", async (req, res) => {
         businessName: vendor.businessName,
         email: vendor.email,
         phone: vendor.phone,
-        status: vendor.status,
-      },
+        status: vendor.status
+      }
     });
+
   } catch (error) {
+
     console.error("LOGIN ERROR ❌", error);
 
     res.status(500).json({
       success: false,
-      message: "Internal server error",
+      message: "Internal server error"
     });
+
   }
 });
 
@@ -162,17 +197,21 @@ router.post("/login", async (req, res) => {
 ========================= */
 router.get("/all", async (req, res) => {
   try {
+
     const vendors = await Vendor.find().sort({ createdAt: -1 });
 
     res.json({
       success: true,
-      vendors,
+      vendors
     });
+
   } catch (err) {
+
     res.status(500).json({
       success: false,
-      message: "Failed to fetch vendors",
+      message: "Failed to fetch vendors"
     });
+
   }
 });
 
@@ -181,12 +220,13 @@ router.get("/all", async (req, res) => {
 ========================= */
 router.put("/status/:id", async (req, res) => {
   try {
+
     const { status } = req.body;
 
     if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status",
+        message: "Invalid status"
       });
     }
 
@@ -199,20 +239,23 @@ router.put("/status/:id", async (req, res) => {
     if (!vendor) {
       return res.status(404).json({
         success: false,
-        message: "Vendor not found",
+        message: "Vendor not found"
       });
     }
 
     res.json({
       success: true,
       message: "Vendor status updated",
-      vendor,
+      vendor
     });
+
   } catch (err) {
+
     res.status(500).json({
       success: false,
-      message: "Failed to update status",
+      message: "Failed to update status"
     });
+
   }
 });
 
@@ -221,6 +264,7 @@ router.put("/status/:id", async (req, res) => {
 ========================= */
 router.get("/stats", async (req, res) => {
   try {
+
     const total = await Vendor.countDocuments();
     const pending = await Vendor.countDocuments({ status: "pending" });
     const approved = await Vendor.countDocuments({ status: "approved" });
@@ -231,13 +275,16 @@ router.get("/stats", async (req, res) => {
       total,
       pending,
       approved,
-      rejected,
+      rejected
     });
+
   } catch (err) {
+
     res.status(500).json({
       success: false,
-      message: "Failed to load stats",
+      message: "Failed to load stats"
     });
+
   }
 });
 
@@ -246,12 +293,13 @@ router.get("/stats", async (req, res) => {
 ========================= */
 router.delete("/delete/:id", async (req, res) => {
   try {
+
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid vendor id",
+        message: "Invalid vendor id"
       });
     }
 
@@ -263,21 +311,24 @@ router.delete("/delete/:id", async (req, res) => {
     if (!deletedVendor) {
       return res.status(404).json({
         success: false,
-        message: "Vendor not found",
+        message: "Vendor not found"
       });
     }
 
     res.json({
       success: true,
-      message: "Vendor and related data deleted successfully",
+      message: "Vendor and related data deleted successfully"
     });
+
   } catch (error) {
+
     console.error("DELETE VENDOR ERROR ❌", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to delete vendor",
+      message: "Failed to delete vendor"
     });
+
   }
 });
 
