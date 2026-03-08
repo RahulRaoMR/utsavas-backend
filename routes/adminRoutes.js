@@ -12,7 +12,9 @@ const router = express.Router();
 ========================= */
 router.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
+    email = email?.toString().toLowerCase().trim();
+    password = password?.toString();
 
     if (!email || !password) {
       return res.status(400).json({
@@ -28,7 +30,9 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    if (admin.password !== password) {
+    const isMatch = await admin.comparePassword(password);
+
+    if (!isMatch) {
       return res.status(401).json({
         message: "Invalid password",
       });
