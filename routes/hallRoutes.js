@@ -12,7 +12,7 @@ const router = express.Router();
 ===================================================== */
 router.get("/search", async (req, res) => {
   try {
-    const { city, location, venueType } = req.query;
+    const { q, city, location, venueType } = req.query;
 
     let filter = { status: "approved" };
 
@@ -26,6 +26,18 @@ router.get("/search", async (req, res) => {
 
     if (venueType) {
       filter.category = venueType.toLowerCase();
+    }
+
+    if (q && String(q).trim()) {
+      const escaped = String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const queryRegex = new RegExp(escaped, "i");
+
+      filter.$or = [
+        { hallName: queryRegex },
+        { "address.area": queryRegex },
+        { "address.city": queryRegex },
+        { category: queryRegex },
+      ];
     }
 
     const halls = await Hall.find(filter)
