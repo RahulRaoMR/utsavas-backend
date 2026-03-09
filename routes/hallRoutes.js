@@ -230,4 +230,76 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+/* =====================================================
+   VENDOR DELETE HALL
+===================================================== */
+router.delete("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const vendorId = (req.query.vendorId || req.body?.vendorId || "").toString();
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      vendor: new mongoose.Types.ObjectId(vendorId),
+    });
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found for this vendor" });
+    }
+
+    await Hall.deleteOne({ _id: hall._id });
+
+    return res.json({
+      success: true,
+      message: "Hall deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE HALL ERROR", error);
+    return res.status(500).json({ message: "Failed to delete hall" });
+  }
+});
+
+router.post("/delete/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const vendorId = (req.body?.vendorId || "").toString();
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      vendor: new mongoose.Types.ObjectId(vendorId),
+    });
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found for this vendor" });
+    }
+
+    await Hall.deleteOne({ _id: hall._id });
+
+    return res.json({
+      success: true,
+      message: "Hall deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE HALL FALLBACK ERROR", error);
+    return res.status(500).json({ message: "Failed to delete hall" });
+  }
+});
 module.exports = router;
+
+

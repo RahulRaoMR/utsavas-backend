@@ -64,8 +64,10 @@ router.post("/register", async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const fullName = `${firstName || ""} ${lastName || ""}`.trim();
 
     const user = await User.create({
+      name: fullName,
       firstName,
       lastName,
       email,
@@ -164,6 +166,46 @@ router.post("/login", async (req, res) => {
       message: "Server error",
     });
 
+  }
+});
+
+/* =========================
+   GET CURRENT USER (ME)
+========================= */
+router.get("/me", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Authorization token missing",
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    return res.json({
+      success: true,
+      user,
+    });
+  } catch (err) {
+    console.error("ME ERROR:", err);
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired token",
+    });
   }
 });
 
