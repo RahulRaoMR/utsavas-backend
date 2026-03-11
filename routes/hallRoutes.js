@@ -1,6 +1,7 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const Hall = require("../models/Hall");
+const Booking = require("../models/Booking");
 
 // ✅ NEW — S3 upload middleware
 const upload = require("../middleware/uploadToS3");
@@ -255,11 +256,12 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ message: "Hall not found for this vendor" });
     }
 
+    await Booking.deleteMany({ hall: hall._id });
     await Hall.deleteOne({ _id: hall._id });
 
     return res.json({
       success: true,
-      message: "Hall deleted successfully",
+      message: "Hall and related bookings deleted successfully",
     });
   } catch (error) {
     console.error("DELETE HALL ERROR", error);
@@ -289,11 +291,12 @@ router.post("/delete/:id", async (req, res) => {
       return res.status(404).json({ message: "Hall not found for this vendor" });
     }
 
+    await Booking.deleteMany({ hall: hall._id });
     await Hall.deleteOne({ _id: hall._id });
 
     return res.json({
       success: true,
-      message: "Hall deleted successfully",
+      message: "Hall and related bookings deleted successfully",
     });
   } catch (error) {
     console.error("DELETE HALL FALLBACK ERROR", error);

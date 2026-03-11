@@ -88,7 +88,15 @@ router.get("/dashboard-stats", async (req, res) => {
 ========================= */
 router.get("/halls", async (req, res) => {
   try {
-    const halls = await Hall.find({ status: "pending" })
+    const rawStatus = (req.query.status || "pending").toString().toLowerCase();
+    const filter =
+      rawStatus === "all"
+        ? {}
+        : ["pending", "approved", "rejected"].includes(rawStatus)
+          ? { status: rawStatus }
+          : { status: "pending" };
+
+    const halls = await Hall.find(filter)
       .populate("vendor", "businessName email phone");
 
     res.json(halls);
