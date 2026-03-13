@@ -132,6 +132,114 @@ router.put("/halls/:id/approve", async (req, res) => {
 });
 
 /* =========================
+   GET SINGLE HALL
+========================= */
+router.get("/halls/:id", async (req, res) => {
+  try {
+    const hall = await Hall.findById(req.params.id).populate(
+      "vendor",
+      "businessName email phone"
+    );
+
+    if (!hall) {
+      return res.status(404).json({
+        message: "Hall not found",
+      });
+    }
+
+    res.json(hall);
+  } catch (error) {
+    console.error("GET SINGLE HALL ERROR ❌", error);
+    res.status(500).json({
+      message: "Failed to fetch hall",
+    });
+  }
+});
+
+/* =========================
+   UPDATE HALL
+========================= */
+router.put("/halls/:id", async (req, res) => {
+  try {
+    const {
+      hallName,
+      category,
+      capacity,
+      parkingCapacity,
+      rooms,
+      about,
+      pricePerDay,
+      pricePerEvent,
+      pricePerPlate,
+      address,
+      location,
+      features,
+      status,
+    } = req.body;
+
+    const hall = await Hall.findById(req.params.id);
+
+    if (!hall) {
+      return res.status(404).json({
+        message: "Hall not found",
+      });
+    }
+
+    hall.hallName = hallName?.toString().trim() || hall.hallName;
+    hall.category = category?.toString().toLowerCase() || hall.category;
+    hall.capacity = Number(capacity) || 0;
+    hall.parkingCapacity = Number(parkingCapacity) || 0;
+    hall.rooms = Number(rooms) || 0;
+    hall.about = about?.toString() || "";
+    hall.pricePerDay = Number(pricePerDay) || 0;
+    hall.pricePerEvent = Number(pricePerEvent) || 0;
+    hall.pricePerPlate = Number(pricePerPlate) || 0;
+
+    if (address && typeof address === "object") {
+      hall.address = {
+        ...hall.address,
+        ...address,
+      };
+    }
+
+    if (
+      location &&
+      typeof location === "object" &&
+      Number.isFinite(Number(location.lat)) &&
+      Number.isFinite(Number(location.lng))
+    ) {
+      hall.location = {
+        lat: Number(location.lat),
+        lng: Number(location.lng),
+      };
+    }
+
+    if (features && typeof features === "object") {
+      hall.features = {
+        ...hall.features,
+        ...features,
+      };
+    }
+
+    if (["pending", "approved", "rejected"].includes(status)) {
+      hall.status = status;
+    }
+
+    await hall.save();
+
+    res.json({
+      message: "Hall updated successfully",
+      hall,
+    });
+  } catch (error) {
+    console.error("UPDATE HALL ERROR ❌", error);
+    res.status(500).json({
+      message: "Failed to update hall",
+    });
+  }
+});
+
+/* =========================
    REJECT HALL
 ========================= */
 router.put("/halls/:id/reject", async (req, res) => {
@@ -150,6 +258,33 @@ router.put("/halls/:id/reject", async (req, res) => {
     console.error("REJECT HALL ERROR ❌", error);
     res.status(500).json({
       message: "Failed to reject hall",
+    });
+  }
+});
+
+/* =========================
+   DELETE HALL
+========================= */
+router.delete("/halls/:id", async (req, res) => {
+  try {
+    const hall = await Hall.findById(req.params.id);
+
+    if (!hall) {
+      return res.status(404).json({
+        message: "Hall not found",
+      });
+    }
+
+    await Booking.deleteMany({ hall: hall._id });
+    await Hall.deleteOne({ _id: hall._id });
+
+    res.json({
+      message: "Hall deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE HALL ERROR ❌", error);
+    res.status(500).json({
+      message: "Failed to delete hall",
     });
   }
 });

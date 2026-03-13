@@ -8,6 +8,23 @@ const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
 
 const router = express.Router();
+const VALID_VENDOR_SERVICE_TYPES = [
+  "premium-venues",
+  "resorts",
+  "banquet-halls",
+  "farm-houses",
+  "convention-halls",
+  "kalyana-mandapams",
+  "destination-weddings",
+  "lawns",
+  "5-star-hotels",
+  "4-star-hotels",
+  "mini-halls",
+  "fort-and-palaces",
+  "wedding",
+  "party",
+  "service",
+];
 
 /* =========================
    TEST ROUTE
@@ -53,7 +70,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    if (!["wedding", "banquet", "party", "service"].includes(serviceType)) {
+    if (!VALID_VENDOR_SERVICE_TYPES.includes(serviceType)) {
       return res.status(400).json({
         success: false,
         message: "Invalid service type"

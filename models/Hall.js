@@ -1,5 +1,23 @@
 const mongoose = require("mongoose");
 
+const HALL_CATEGORIES = [
+  "premium-venues",
+  "resorts",
+  "banquet-halls",
+  "farm-houses",
+  "convention-halls",
+  "kalyana-mandapams",
+  "destination-weddings",
+  "lawns",
+  "5-star-hotels",
+  "4-star-hotels",
+  "mini-halls",
+  "fort-and-palaces",
+  "wedding",
+  "party",
+  "banquet",
+];
+
 const hallSchema = new mongoose.Schema(
   {
     /* =========================
@@ -24,7 +42,7 @@ const hallSchema = new mongoose.Schema(
 
     category: {
       type: String,
-      enum: ["wedding", "banquet", "party"],
+      enum: HALL_CATEGORIES,
       required: true,
       lowercase: true,
       index: true,

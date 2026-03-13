@@ -39,7 +39,23 @@ const vendorSchema = new mongoose.Schema(
     serviceType: {
       type: String,
       required: true,
-      enum: ["wedding", "banquet", "party", "service"],
+      enum: [
+        "premium-venues",
+        "resorts",
+        "banquet-halls",
+        "farm-houses",
+        "convention-halls",
+        "kalyana-mandapams",
+        "destination-weddings",
+        "lawns",
+        "5-star-hotels",
+        "4-star-hotels",
+        "mini-halls",
+        "fort-and-palaces",
+        "wedding",
+        "party",
+        "service",
+      ],
     },
 
     password: {

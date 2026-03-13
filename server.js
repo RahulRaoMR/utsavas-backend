@@ -15,24 +15,21 @@ const allowedOrigins = [
   "http://localhost:3000",
   "https://utsavas.vercel.app",
   "https://www.utsavas.com",
-  "https://utsavas.com"
+  "https://utsavas.com",
 ];
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-
-      // allow requests with no origin (Postman, mobile apps)
+    origin(origin, callback) {
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      // allow temporarily
       return callback(null, true);
     },
-    credentials: true
+    credentials: true,
   })
 );
 
@@ -67,7 +64,6 @@ const authRoutes = require("./routes/authRoutes");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);
-
 app.use("/api/vendor", vendorRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/halls", hallRoutes);
@@ -79,26 +75,45 @@ app.use("/api/payment", paymentRoutes);
 ========================= */
 
 app.get("/", (req, res) => {
-  res.status(200).send("UTSAVAM Backend Running 🚀");
+  res.status(200).send("UTSAVAM Backend Running");
 });
 
 /* =========================
    DATABASE CONNECTION
 ========================= */
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => {
+const mongoUri =
+  process.env.MONGO_URI ||
+  process.env.MONGODB_URI ||
+  process.env.MONGO_ATLAS_URI;
 
-    console.log("✅ MongoDB Atlas Connected");
+if (!mongoUri) {
+  console.error(
+    "MongoDB connection error: missing MONGO_URI, MONGODB_URI, or MONGO_ATLAS_URI in .env"
+  );
+  process.exit(1);
+}
+
+mongoose
+  .connect(mongoUri)
+  .then(() => {
+    console.log("MongoDB Connected");
 
     const PORT = process.env.PORT || 5000;
 
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`Server running on port ${PORT}`);
     });
-
   })
   .catch((err) => {
-    console.error("❌ MongoDB connection error:", err);
+    console.error("MongoDB connection error:", err);
+
+    if (
+      err?.code === "ECONNREFUSED" &&
+      String(err?.hostname || "").includes("_mongodb._tcp")
+    ) {
+      console.error(
+        "Atlas SRV DNS lookup failed. Keep MONGO_URI on local MongoDB or use a direct mongodb:// Atlas URI instead of mongodb+srv://."
+      );
+    }
   });

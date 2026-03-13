@@ -111,7 +111,9 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
 
     // ✅🔥 S3 IMAGE URLS (CRITICAL CHANGE)
     const imageUrls = req.files
-      ? req.files.map((f) => f.location)
+      ? req.files
+          .map((file) => file.location || `/uploads/halls/${file.filename}`)
+          .filter(Boolean)
       : [];
 
     const hall = await Hall.create({
@@ -266,6 +268,95 @@ router.delete("/:id", async (req, res) => {
   } catch (error) {
     console.error("DELETE HALL ERROR", error);
     return res.status(500).json({ message: "Failed to delete hall" });
+  }
+});
+
+/* =====================================================
+   VENDOR UPDATE HALL
+===================================================== */
+router.put("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const vendorId = (req.query.vendorId || req.body?.vendorId || "").toString();
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      vendor: new mongoose.Types.ObjectId(vendorId),
+    });
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found for this vendor" });
+    }
+
+    const {
+      hallName,
+      category,
+      capacity,
+      parkingCapacity,
+      rooms,
+      about,
+      pricePerDay,
+      pricePerEvent,
+      pricePerPlate,
+      address,
+      location,
+      features,
+    } = req.body;
+
+    hall.hallName = hallName?.toString().trim() || hall.hallName;
+    hall.category = category?.toString().toLowerCase() || hall.category;
+    hall.capacity = Number(capacity) || 0;
+    hall.parkingCapacity = Number(parkingCapacity) || 0;
+    hall.rooms = Number(rooms) || 0;
+    hall.about = about?.toString() || "";
+    hall.pricePerDay = Number(pricePerDay) || 0;
+    hall.pricePerEvent = Number(pricePerEvent) || 0;
+    hall.pricePerPlate = Number(pricePerPlate) || 0;
+
+    if (address && typeof address === "object") {
+      hall.address = {
+        ...hall.address,
+        ...address,
+      };
+    }
+
+    if (
+      location &&
+      typeof location === "object" &&
+      Number.isFinite(Number(location.lat)) &&
+      Number.isFinite(Number(location.lng))
+    ) {
+      hall.location = {
+        lat: Number(location.lat),
+        lng: Number(location.lng),
+      };
+    }
+
+    if (features && typeof features === "object") {
+      hall.features = {
+        ...hall.features,
+        ...features,
+      };
+    }
+
+    await hall.save();
+
+    return res.json({
+      success: true,
+      message: "Hall updated successfully",
+      hall,
+    });
+  } catch (error) {
+    console.error("UPDATE HALL ERROR", error);
+    return res.status(500).json({ message: "Failed to update hall" });
   }
 });
 
