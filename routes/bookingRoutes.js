@@ -70,6 +70,47 @@ router.post("/create", async (req, res) => {
   }
 });
 
+router.patch("/:bookingId/payment", async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { paymentMethod, paymentStatus, amount } = req.body;
+
+    const updates = {};
+
+    if (paymentMethod) {
+      updates.paymentMethod = paymentMethod;
+    }
+
+    if (paymentStatus) {
+      updates.paymentStatus = paymentStatus;
+    }
+
+    if (amount !== undefined) {
+      updates.amount = Number(amount) || 0;
+    }
+
+    const booking = await Booking.findByIdAndUpdate(bookingId, updates, {
+      new: true,
+    });
+
+    if (!booking) {
+      return res.status(404).json({
+        message: "Booking not found",
+      });
+    }
+
+    res.json({
+      message: "Payment details updated successfully",
+      booking,
+    });
+  } catch (error) {
+    console.error("PAYMENT UPDATE ERROR", error);
+    res.status(500).json({
+      message: "Failed to update payment details",
+    });
+  }
+});
+
 /* =========================
    UPDATE BOOKING STATUS
 ========================= */
@@ -189,7 +230,14 @@ router.get("/admin/bookings", async (req, res) => {
 
     console.log("Admin bookings count:", formatted.length);
 
-    res.json(formatted);
+    const paymentAwareFormatted = formatted.map((item, index) => ({
+      ...item,
+      paymentMethod: bookings[index]?.paymentMethod,
+      paymentStatus: bookings[index]?.paymentStatus,
+      amount: bookings[index]?.amount || 0,
+    }));
+
+    res.json(paymentAwareFormatted);
   } catch (error) {
     console.error("ADMIN BOOKINGS ERROR ❌", error);
     res.status(500).json({
