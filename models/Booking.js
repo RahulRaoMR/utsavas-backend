@@ -54,6 +54,13 @@ const bookingSchema = new mongoose.Schema(
       trim: true,
     },
 
+    customerEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+    },
+
     // 🔥 BOOKING STATUS (vendor/admin decision)
     status: {
       type: String,
@@ -83,6 +90,39 @@ const bookingSchema = new mongoose.Schema(
     amount: {
       type: Number,
       default: 0,
+    },
+
+    venueAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    supportFee: {
+      type: Number,
+      default: 0,
+    },
+
+    subtotalAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    discountAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    couponCode: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "",
+    },
+
+    pricingBasis: {
+      type: String,
+      trim: true,
+      default: "",
     },
   },
   { timestamps: true }
