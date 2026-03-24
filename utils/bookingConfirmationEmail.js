@@ -4,8 +4,31 @@ const nodemailer = require("nodemailer");
 let cachedTransporter = null;
 let cachedResendConfig = null;
 
+function pickEnv(...keys) {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
+function buildMailConfigError() {
+  const error = new Error(
+    "Email is not configured. Set either RESEND_API_KEY with RESEND_FROM_EMAIL, or SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS."
+  );
+  error.code = "MAIL_NOT_CONFIGURED";
+  return error;
+}
+
 function formatCurrency(amount) {
   return `Rs ${Number(amount || 0).toLocaleString("en-IN")}`;
+}
+
+function formatChargeLabel(rate) {
+  return `GST (${Math.round(rate * 100)}%)`;
 }
 
 function formatDate(value) {
@@ -50,17 +73,21 @@ function getTransporter() {
     return cachedTransporter;
   }
 
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = process.env;
-  const normalizedPass = String(SMTP_PASS || "").trim().replace(/\s+/g, "");
+  const smtpHost = pickEnv("SMTP_HOST", "MAIL_HOST", "EMAIL_HOST");
+  const smtpPort = pickEnv("SMTP_PORT", "MAIL_PORT", "EMAIL_PORT");
+  const smtpUser = pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER");
+  const smtpSecure = pickEnv("SMTP_SECURE", "MAIL_SECURE", "EMAIL_SECURE");
+  const normalizedPass = pickEnv("SMTP_PASS", "MAIL_PASS", "EMAIL_PASS").replace(
+    /\s+/g,
+    ""
+  );
 
-  if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !normalizedPass) {
-    throw new Error(
-      "SMTP is not configured. Please set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS."
-    );
+  if (!smtpHost || !smtpPort || !smtpUser || !normalizedPass) {
+    throw buildMailConfigError();
   }
 
   if (
-    String(SMTP_HOST).toLowerCase() === "smtp.gmail.com" &&
+    String(smtpHost).toLowerCase() === "smtp.gmail.com" &&
     (normalizedPass === "YOUR_GOOGLE_APP_PASSWORD" || normalizedPass.length < 16)
   ) {
     throw new Error(
@@ -69,11 +96,11 @@ function getTransporter() {
   }
 
   cachedTransporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT),
-    secure: String(SMTP_SECURE).toLowerCase() === "true" || Number(SMTP_PORT) === 465,
+    host: smtpHost,
+    port: Number(smtpPort),
+    secure: String(smtpSecure).toLowerCase() === "true" || Number(smtpPort) === 465,
     auth: {
-      user: SMTP_USER,
+      user: smtpUser,
       pass: normalizedPass,
     },
   });
@@ -86,10 +113,14 @@ function getResendConfig() {
     return cachedResendConfig;
   }
 
-  const apiKey = String(process.env.RESEND_API_KEY || "").trim();
-  const from =
-    String(process.env.RESEND_FROM_EMAIL || "").trim() ||
-    String(process.env.MAIL_FROM || "").trim();
+  const apiKey = pickEnv("RESEND_API_KEY");
+  const from = pickEnv(
+    "RESEND_FROM_EMAIL",
+    "RESEND_FROM",
+    "MAIL_FROM",
+    "EMAIL_FROM",
+    "SMTP_FROM"
+  );
 
   if (!apiKey || !from) {
     return null;
@@ -98,7 +129,7 @@ function getResendConfig() {
   cachedResendConfig = {
     apiKey,
     from,
-    replyTo: String(process.env.RESEND_REPLY_TO || "").trim(),
+    replyTo: pickEnv("RESEND_REPLY_TO", "MAIL_REPLY_TO", "EMAIL_REPLY_TO"),
   };
 
   return cachedResendConfig;
@@ -118,6 +149,10 @@ function getMailErrorMessage(error) {
     return `Resend email failed: ${resendMessage}`;
   }
 
+  if (error.code === "MAIL_NOT_CONFIGURED") {
+    return "Email is not configured. Set either RESEND_API_KEY with RESEND_FROM_EMAIL, or SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS.";
+  }
+
   if (error.code === "EAUTH" || error.responseCode === 535) {
     return "Gmail login failed. Set SMTP_USER to your Gmail address and SMTP_PASS to a valid 16-character Google App Password.";
   }
@@ -129,12 +164,13 @@ function buildMailData(booking) {
   const hall = booking.hall || {};
   const vendor = booking.vendor || {};
   const bookingUrl = process.env.PUBLIC_WEB_URL || "https://www.utsavas.com";
+  const gstRate = 0.02;
   const hallName = hall.hallName || "Your venue";
   const venueAddress = buildAddress(hall.address || {});
   const totalAmount = Number(booking.amount) || 0;
   const venueAmount = Number(booking.venueAmount) || totalAmount;
-  const supportFee = Number(booking.supportFee) || 0;
-  const subtotalAmount = Number(booking.subtotalAmount) || venueAmount + supportFee;
+  const gstAmount = Number(booking.supportFee) || 0;
+  const subtotalAmount = Number(booking.subtotalAmount) || venueAmount + gstAmount;
   const discountAmount = Number(booking.discountAmount) || 0;
   const days = calculateDays(booking.checkIn, booking.checkOut);
 
@@ -156,9 +192,10 @@ function buildMailData(booking) {
     paymentMethod:
       booking.paymentMethod === "online" ? "Paid online" : "Pay at venue",
     paymentStatus: booking.paymentStatus || "pending",
+    gstLabel: formatChargeLabel(gstRate),
     pricingBasis: booking.pricingBasis || "Venue pricing",
     venueAmount: formatCurrency(venueAmount),
-    supportFee: formatCurrency(supportFee),
+    gstAmount: formatCurrency(gstAmount),
     subtotalAmount: formatCurrency(subtotalAmount),
     discountAmount: formatCurrency(discountAmount),
     totalAmount: formatCurrency(totalAmount),
@@ -212,7 +249,7 @@ function buildHtml(data) {
             <h2 style="margin:0 0 16px; color:#183b63; font-size:24px;">Invoice summary</h2>
             <table style="width:100%; border-collapse:collapse; font-size:16px; line-height:1.8;">
               <tr><td style="padding:8px 0; color:#5e5551;">Venue amount</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.venueAmount}</td></tr>
-              <tr><td style="padding:8px 0; color:#5e5551;">Support fee</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.supportFee}</td></tr>
+              <tr><td style="padding:8px 0; color:#5e5551;">${data.gstLabel}</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.gstAmount}</td></tr>
               <tr><td style="padding:8px 0; color:#5e5551;">Subtotal</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.subtotalAmount}</td></tr>
               <tr><td style="padding:8px 0; color:#5e5551;">Coupon</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.couponCode}</td></tr>
               <tr><td style="padding:8px 0; color:#2f855a;">Discount</td><td style="padding:8px 0; color:#2f855a; font-weight:700; text-align:right;">- ${data.discountAmount}</td></tr>
@@ -251,7 +288,7 @@ function buildText(data) {
     ``,
     `Invoice summary`,
     `Venue amount: ${data.venueAmount}`,
-    `Support fee: ${data.supportFee}`,
+    `${data.gstLabel}: ${data.gstAmount}`,
     `Subtotal: ${data.subtotalAmount}`,
     `Coupon: ${data.couponCode}`,
     `Discount: - ${data.discountAmount}`,
@@ -311,10 +348,10 @@ async function sendBookingApprovalEmail(booking) {
   }
 
   const transporter = getTransporter();
+  const smtpUser = pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER");
   const fromAddress =
-    process.env.MAIL_FROM ||
-    process.env.SMTP_FROM ||
-    `"UTSAVAS" <${process.env.SMTP_USER}>`;
+    pickEnv("MAIL_FROM", "EMAIL_FROM", "SMTP_FROM") ||
+    `"UTSAVAS" <${smtpUser}>`;
 
   return transporter.sendMail({
     from: fromAddress,

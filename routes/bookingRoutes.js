@@ -5,12 +5,14 @@ const Booking = require("../models/Booking");
 const Hall = require("../models/Hall");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const authMiddleware = require("../middleware/authMiddleware");
 const {
   getMailErrorMessage,
   sendBookingApprovalEmail,
 } = require("../utils/bookingConfirmationEmail");
 
 console.log("🔥 BOOKING ROUTES LOADED");
+const GST_RATE = 0.02;
 
 const normalizePhone = (phone) => {
   if (!phone) return "";
@@ -69,6 +71,68 @@ const findUserFromRequest = async (req, phone, email) => {
   }).select("email firstName lastName name phone");
 };
 
+const buildUserBookingQuery = (user) => {
+  const email = normalizeEmail(user?.email);
+  const phone = normalizePhone(user?.phone);
+  const last10 = phone.slice(-10);
+  const conditions = [];
+
+  if (email) {
+    conditions.push({ customerEmail: email });
+  }
+
+  if (phone) {
+    conditions.push({ phone });
+  }
+
+  if (last10) {
+    conditions.push({ phone: new RegExp(`${last10}$`) });
+  }
+
+  return conditions.length ? { $or: conditions } : null;
+};
+
+const serializeBooking = (booking) => {
+  const hall = booking?.hall || {};
+  const vendor = booking?.vendor || {};
+
+  return {
+    _id: booking?._id,
+    bookingReference: String(booking?._id || ""),
+    customerName: booking?.customerName || "",
+    customerEmail: booking?.customerEmail || "",
+    phone: booking?.phone || "",
+    eventType: booking?.eventType || "",
+    guests: booking?.guests || 0,
+    status: booking?.status || "pending",
+    checkIn: booking?.checkIn || null,
+    checkOut: booking?.checkOut || null,
+    createdAt: booking?.createdAt || null,
+    updatedAt: booking?.updatedAt || null,
+    hallId: hall?._id || booking?.hall || null,
+    hallName: hall?.hallName || "N/A",
+    hallImages: Array.isArray(hall?.images) ? hall.images : [],
+    hallAddress: hall?.address || {},
+    hallCategory: hall?.category || "",
+    hallCapacity: hall?.capacity || 0,
+    vendorId: vendor?._id || booking?.vendor || null,
+    vendorName: vendor?.businessName || "N/A",
+    vendorOwnerName: vendor?.ownerName || "",
+    vendorEmail: vendor?.email || "",
+    vendorPhone: vendor?.phone || "",
+    vendorCity: vendor?.city || "",
+    paymentMethod: booking?.paymentMethod || "pay_at_venue",
+    paymentStatus: booking?.paymentStatus || "pending",
+    amount: Number(booking?.amount) || 0,
+    venueAmount: Number(booking?.venueAmount) || 0,
+    supportFee: Number(booking?.supportFee) || 0,
+    subtotalAmount: Number(booking?.subtotalAmount) || 0,
+    discountAmount: Number(booking?.discountAmount) || 0,
+    couponCode: booking?.couponCode || "",
+    pricingBasis: booking?.pricingBasis || "",
+  };
+};
+
 /* =========================
    CREATE BOOKING
 ========================= */
@@ -83,10 +147,7 @@ router.post("/create", async (req, res) => {
       customerName,
       phone,
       customerEmail,
-      amount,
       venueAmount,
-      supportFee,
-      subtotalAmount,
       discountAmount,
       couponCode,
       pricingBasis,
@@ -118,6 +179,15 @@ router.post("/create", async (req, res) => {
     const matchedUser = await findUserFromRequest(req, phone, customerEmail);
     const resolvedEmail =
       normalizeEmail(customerEmail) || normalizeEmail(matchedUser?.email);
+    const normalizedVenueAmount = Math.max(Number(venueAmount) || 0, 0);
+    const normalizedSupportFee =
+      normalizedVenueAmount > 0 ? Math.round(normalizedVenueAmount * GST_RATE) : 0;
+    const normalizedSubtotalAmount = normalizedVenueAmount + normalizedSupportFee;
+    const normalizedDiscountAmount = Math.max(Number(discountAmount) || 0, 0);
+    const normalizedAmount = Math.max(
+      normalizedSubtotalAmount - normalizedDiscountAmount,
+      0
+    );
 
     const booking = new Booking({
       hall: hallId,
@@ -130,11 +200,11 @@ router.post("/create", async (req, res) => {
       phone: normalizePhone(phone) || phone,
       customerEmail: resolvedEmail,
       status: "pending",
-      amount: Number(amount) || 0,
-      venueAmount: Number(venueAmount) || 0,
-      supportFee: Number(supportFee) || 0,
-      subtotalAmount: Number(subtotalAmount) || 0,
-      discountAmount: Number(discountAmount) || 0,
+      amount: normalizedAmount,
+      venueAmount: normalizedVenueAmount,
+      supportFee: normalizedSupportFee,
+      subtotalAmount: normalizedSubtotalAmount,
+      discountAmount: normalizedDiscountAmount,
       couponCode: couponCode ? String(couponCode).trim().toUpperCase() : "",
       pricingBasis: pricingBasis ? String(pricingBasis).trim() : "",
     });
@@ -149,6 +219,88 @@ router.post("/create", async (req, res) => {
     console.error("BOOKING CREATE ERROR ❌", error);
     res.status(500).json({
       message: "Server error while creating booking",
+    });
+  }
+});
+
+router.get("/me", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select(
+      "email firstName lastName name phone"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const query = buildUserBookingQuery(user);
+
+    if (!query) {
+      return res.json([]);
+    }
+
+    const bookings = await Booking.find(query)
+      .populate("hall", "hallName images address category capacity")
+      .populate("vendor", "businessName ownerName email phone city")
+      .sort({ createdAt: -1 });
+
+    res.json(bookings.map(serializeBooking));
+  } catch (error) {
+    console.error("GET MY BOOKINGS ERROR", error);
+    res.status(500).json({
+      message: "Failed to fetch your bookings",
+    });
+  }
+});
+
+router.get("/me/:bookingId", authMiddleware, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      return res.status(400).json({
+        message: "Invalid booking id",
+      });
+    }
+
+    const user = await User.findById(req.user.id).select(
+      "email firstName lastName name phone"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const query = buildUserBookingQuery(user);
+
+    if (!query) {
+      return res.status(404).json({
+        message: "Booking not found",
+      });
+    }
+
+    const booking = await Booking.findOne({
+      _id: bookingId,
+      ...query,
+    })
+      .populate("hall", "hallName images address category capacity")
+      .populate("vendor", "businessName ownerName email phone city");
+
+    if (!booking) {
+      return res.status(404).json({
+        message: "Booking not found",
+      });
+    }
+
+    res.json(serializeBooking(booking));
+  } catch (error) {
+    console.error("GET MY BOOKING DETAIL ERROR", error);
+    res.status(500).json({
+      message: "Failed to fetch booking details",
     });
   }
 });
