@@ -2,65 +2,134 @@ const express = require("express");
 const mongoose = require("mongoose");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
-
-// ✅ NEW — S3 upload middleware
+const {
+  normalizeListingPlan,
+  sortHallsByListingPriority,
+} = require("../utils/listingPlan");
+const { normalizeVenueCategory } = require("../utils/venueCategory");
 const upload = require("../middleware/uploadToS3");
+const authMiddleware = require("../middleware/authMiddleware");
 
+const { requireAdmin, requireVendor } = authMiddleware;
 const router = express.Router();
 
+const getAuthenticatedVendorId = (req) => String(req.user?.id || "");
+
+const ensureVendorOwnership = (req, targetVendorId) => {
+  const vendorId = getAuthenticatedVendorId(req);
+
+  if (!vendorId) {
+    return {
+      ok: false,
+      status: 401,
+      message: "Vendor session is invalid",
+    };
+  }
+
+  if (targetVendorId && String(targetVendorId) !== vendorId) {
+    return {
+      ok: false,
+      status: 403,
+      message: "You can access only your own halls",
+    };
+  }
+
+  return {
+    ok: true,
+    vendorId,
+  };
+};
+
 /* =====================================================
-   🔥 SEARCH HALLS (MAIN FILTER API)
+   SEARCH HALLS (MAIN FILTER API)
 ===================================================== */
 router.get("/search", async (req, res) => {
   try {
     const { q, city, location, venueType } = req.query;
 
-    let filter = { status: "approved" };
+    const filter = { status: "approved" };
+    const andConditions = [];
 
     if (city) {
-      filter["address.city"] = new RegExp(`^${city}$`, "i");
+      const cityRegex = new RegExp(
+        `^${String(city).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        "i"
+      );
+
+      andConditions.push({
+        $or: [{ "address.city": cityRegex }, { "address.pincode": cityRegex }],
+      });
     }
 
     if (location) {
-      filter["address.area"] = new RegExp(`^${location}$`, "i");
+      const locationRegex = new RegExp(
+        `^${String(location).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        "i"
+      );
+
+      andConditions.push({
+        $or: [
+          { "address.area": locationRegex },
+          { "address.city": locationRegex },
+          { "address.pincode": locationRegex },
+        ],
+      });
     }
 
     if (venueType) {
-      filter.category = venueType.toLowerCase();
+      const normalizedCategory = normalizeVenueCategory(venueType);
+      if (normalizedCategory) {
+        andConditions.push({ category: normalizedCategory });
+      }
     }
 
     if (q && String(q).trim()) {
       const escaped = String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const queryRegex = new RegExp(escaped, "i");
 
-      filter.$or = [
-        { hallName: queryRegex },
-        { "address.area": queryRegex },
-        { "address.city": queryRegex },
-        { category: queryRegex },
-      ];
+      andConditions.push({
+        $or: [
+          { hallName: queryRegex },
+          { "address.area": queryRegex },
+          { "address.city": queryRegex },
+          { "address.pincode": queryRegex },
+          { category: queryRegex },
+        ],
+      });
+    }
+
+    if (andConditions.length > 0) {
+      filter.$and = andConditions;
     }
 
     const halls = await Hall.find(filter)
       .populate("vendor", "businessName phone")
-      .sort({ createdAt: -1 });
+      .lean();
+
+    const sortedHalls = sortHallsByListingPriority(halls);
 
     res.json({
       success: true,
-      count: halls.length,
-      data: halls,
+      count: sortedHalls.length,
+      data: sortedHalls,
     });
   } catch (error) {
-    console.error("SEARCH ERROR ❌", error);
+    console.error("SEARCH ERROR", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* =====================================================
-   ✅ ADD HALL (NOW UPLOADS TO S3)
+   VENDOR ADD HALL
 ===================================================== */
-router.post("/add", upload.array("images", 10), async (req, res) => {
+router.post("/add", requireVendor, upload.array("images", 10), async (req, res) => {
   try {
+    const ownership = ensureVendorOwnership(req, req.body?.vendorId);
+
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ message: ownership.message });
+    }
+
     const {
       hallName,
       category,
@@ -68,20 +137,12 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       parkingCapacity,
       rooms,
       about,
-      vendorId,
+      listingPlan,
     } = req.body;
 
-    console.log("📥 ADD HALL vendorId:", vendorId);
-
-    if (!hallName || !category || !vendorId) {
+    if (!hallName || !category) {
       return res.status(400).json({
-        message: "hallName, category and vendorId are required",
-      });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
-      return res.status(400).json({
-        message: "Invalid vendorId",
+        message: "hallName and category are required",
       });
     }
 
@@ -97,19 +158,6 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       return res.status(400).json({ message: "Invalid JSON data" });
     }
 
-    const pricePerDay = req.body.pricePerDay
-      ? Number(req.body.pricePerDay)
-      : 0;
-
-    const pricePerEvent = req.body.pricePerEvent
-      ? Number(req.body.pricePerEvent)
-      : 0;
-
-    const pricePerPlate = req.body.pricePerPlate
-      ? Number(req.body.pricePerPlate)
-      : 0;
-
-    // ✅🔥 S3 IMAGE URLS (CRITICAL CHANGE)
     const imageUrls = req.files
       ? req.files
           .map((file) => file.location || `/uploads/halls/${file.filename}`)
@@ -117,54 +165,51 @@ router.post("/add", upload.array("images", 10), async (req, res) => {
       : [];
 
     const hall = await Hall.create({
-      vendor: new mongoose.Types.ObjectId(vendorId),
+      vendor: new mongoose.Types.ObjectId(ownership.vendorId),
       hallName,
-      category: category.toLowerCase(),
+      category: normalizeVenueCategory(category),
       capacity: Number(capacity) || 0,
       parkingCapacity: Number(parkingCapacity) || 0,
       rooms: Number(rooms) || 0,
       about: about || "",
-      pricePerDay,
-      pricePerEvent,
-      pricePerPlate,
+      pricePerDay: Number(req.body.pricePerDay) || 0,
+      pricePerEvent: Number(req.body.pricePerEvent) || 0,
+      pricePerPlate: Number(req.body.pricePerPlate) || 0,
+      listingPlan: normalizeListingPlan(listingPlan),
       address,
       location,
       features,
-      images: imageUrls, // ✅ NOW S3 URLs
+      images: imageUrls,
       status: "pending",
     });
 
-    console.log("✅ Hall created for vendor:", vendorId);
+    console.log(`Vendor ${ownership.vendorId} created hall ${hall._id}`);
 
     res.status(201).json({
       message: "Hall added successfully",
       hall,
     });
   } catch (error) {
-    console.error("ADD HALL ERROR ❌", error);
+    console.error("ADD HALL ERROR", error);
     res.status(500).json({ message: "Internal server error" });
   }
 });
 
 /* =====================================================
-   🔥✅ VENDOR APPROVED HALLS
+   VENDOR APPROVED HALLS
 ===================================================== */
-router.get("/vendor/:vendorId", async (req, res) => {
+router.get("/vendor/:vendorId", requireVendor, async (req, res) => {
   try {
-    const { vendorId } = req.params;
+    const ownership = ensureVendorOwnership(req, req.params.vendorId);
 
-    console.log("📥 Vendor halls request for:", vendorId);
-
-    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
-      return res.status(400).json({ message: "Invalid vendorId" });
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ message: ownership.message });
     }
 
     const halls = await Hall.find({
-      vendor: new mongoose.Types.ObjectId(vendorId),
+      vendor: new mongoose.Types.ObjectId(ownership.vendorId),
       status: "approved",
     }).sort({ createdAt: -1 });
-
-    console.log("✅ Approved halls found:", halls.length);
 
     res.json({
       success: true,
@@ -172,7 +217,7 @@ router.get("/vendor/:vendorId", async (req, res) => {
       data: halls,
     });
   } catch (error) {
-    console.error("VENDOR HALLS ERROR ❌", error);
+    console.error("VENDOR HALLS ERROR", error);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -182,14 +227,15 @@ router.get("/vendor/:vendorId", async (req, res) => {
 ===================================================== */
 router.get("/public", async (req, res) => {
   try {
-    const filter = { status: "approved" };
+    const requestedCategory = normalizeVenueCategory(req.query.category);
+    const halls = await Hall.find({ status: "approved" }).lean();
+    const filteredHalls = requestedCategory
+      ? halls.filter(
+          (hall) => normalizeVenueCategory(hall.category) === requestedCategory
+        )
+      : halls;
 
-    if (req.query.category) {
-      filter.category = req.query.category.toLowerCase();
-    }
-
-    const halls = await Hall.find(filter).sort({ createdAt: -1 });
-    res.json(halls);
+    res.json(sortHallsByListingPriority(filteredHalls));
   } catch (error) {
     res.status(500).json({ message: "Failed to fetch public halls" });
   }
@@ -198,7 +244,7 @@ router.get("/public", async (req, res) => {
 /* =====================================================
    ADMIN APPROVE
 ===================================================== */
-router.put("/approve/:id", async (req, res) => {
+router.put("/approve/:id", requireAdmin, async (req, res) => {
   const hall = await Hall.findByIdAndUpdate(
     req.params.id,
     { status: "approved" },
@@ -209,7 +255,7 @@ router.put("/approve/:id", async (req, res) => {
     return res.status(404).json({ message: "Hall not found" });
   }
 
-  res.json({ message: "Hall approved ✅", hall });
+  res.json({ message: "Hall approved", hall });
 });
 
 /* =====================================================
@@ -228,7 +274,7 @@ router.get("/:id", async (req, res) => {
 
     res.json(hall);
   } catch (error) {
-    console.error("FETCH HALL ERROR ❌", error);
+    console.error("FETCH HALL ERROR", error);
     res.status(500).json({ message: "Failed to fetch hall" });
   }
 });
@@ -236,22 +282,25 @@ router.get("/:id", async (req, res) => {
 /* =====================================================
    VENDOR DELETE HALL
 ===================================================== */
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireVendor, async (req, res) => {
   try {
     const { id } = req.params;
-    const vendorId = (req.query.vendorId || req.body?.vendorId || "").toString();
+    const ownership = ensureVendorOwnership(
+      req,
+      req.query.vendorId || req.body?.vendorId
+    );
+
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ message: ownership.message });
+    }
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid hall id" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
-      return res.status(400).json({ message: "Invalid vendor id" });
-    }
-
     const hall = await Hall.findOne({
       _id: new mongoose.Types.ObjectId(id),
-      vendor: new mongoose.Types.ObjectId(vendorId),
+      vendor: new mongoose.Types.ObjectId(ownership.vendorId),
     });
 
     if (!hall) {
@@ -260,6 +309,8 @@ router.delete("/:id", async (req, res) => {
 
     await Booking.deleteMany({ hall: hall._id });
     await Hall.deleteOne({ _id: hall._id });
+
+    console.log(`Vendor ${ownership.vendorId} deleted hall ${hall._id}`);
 
     return res.json({
       success: true,
@@ -274,22 +325,25 @@ router.delete("/:id", async (req, res) => {
 /* =====================================================
    VENDOR UPDATE HALL
 ===================================================== */
-router.put("/:id", async (req, res) => {
+router.put("/:id", requireVendor, async (req, res) => {
   try {
     const { id } = req.params;
-    const vendorId = (req.query.vendorId || req.body?.vendorId || "").toString();
+    const ownership = ensureVendorOwnership(
+      req,
+      req.query.vendorId || req.body?.vendorId
+    );
+
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ message: ownership.message });
+    }
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid hall id" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
-      return res.status(400).json({ message: "Invalid vendor id" });
-    }
-
     const hall = await Hall.findOne({
       _id: new mongoose.Types.ObjectId(id),
-      vendor: new mongoose.Types.ObjectId(vendorId),
+      vendor: new mongoose.Types.ObjectId(ownership.vendorId),
     });
 
     if (!hall) {
@@ -306,13 +360,16 @@ router.put("/:id", async (req, res) => {
       pricePerDay,
       pricePerEvent,
       pricePerPlate,
+      listingPlan,
       address,
       location,
       features,
     } = req.body;
 
     hall.hallName = hallName?.toString().trim() || hall.hallName;
-    hall.category = category?.toString().toLowerCase() || hall.category;
+    hall.category = category
+      ? normalizeVenueCategory(category)
+      : hall.category;
     hall.capacity = Number(capacity) || 0;
     hall.parkingCapacity = Number(parkingCapacity) || 0;
     hall.rooms = Number(rooms) || 0;
@@ -320,6 +377,9 @@ router.put("/:id", async (req, res) => {
     hall.pricePerDay = Number(pricePerDay) || 0;
     hall.pricePerEvent = Number(pricePerEvent) || 0;
     hall.pricePerPlate = Number(pricePerPlate) || 0;
+    if (listingPlan) {
+      hall.listingPlan = normalizeListingPlan(listingPlan);
+    }
 
     if (address && typeof address === "object") {
       hall.address = {
@@ -349,6 +409,8 @@ router.put("/:id", async (req, res) => {
 
     await hall.save();
 
+    console.log(`Vendor ${ownership.vendorId} updated hall ${hall._id}`);
+
     return res.json({
       success: true,
       message: "Hall updated successfully",
@@ -360,22 +422,22 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-router.post("/delete/:id", async (req, res) => {
+router.post("/delete/:id", requireVendor, async (req, res) => {
   try {
     const { id } = req.params;
-    const vendorId = (req.body?.vendorId || "").toString();
+    const ownership = ensureVendorOwnership(req, req.body?.vendorId);
+
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ message: ownership.message });
+    }
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid hall id" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
-      return res.status(400).json({ message: "Invalid vendor id" });
-    }
-
     const hall = await Hall.findOne({
       _id: new mongoose.Types.ObjectId(id),
-      vendor: new mongoose.Types.ObjectId(vendorId),
+      vendor: new mongoose.Types.ObjectId(ownership.vendorId),
     });
 
     if (!hall) {
@@ -384,6 +446,8 @@ router.post("/delete/:id", async (req, res) => {
 
     await Booking.deleteMany({ hall: hall._id });
     await Hall.deleteOne({ _id: hall._id });
+
+    console.log(`Vendor ${ownership.vendorId} deleted hall ${hall._id} via fallback route`);
 
     return res.json({
       success: true,
@@ -394,6 +458,5 @@ router.post("/delete/:id", async (req, res) => {
     return res.status(500).json({ message: "Failed to delete hall" });
   }
 });
+
 module.exports = router;
-
-

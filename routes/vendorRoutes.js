@@ -1,13 +1,14 @@
 const express = require("express");
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-
 const Vendor = require("../models/Vendor");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
+const generateToken = require("../utils/generateToken");
+const authMiddleware = require("../middleware/authMiddleware");
 
+const { requireAdmin } = authMiddleware;
 const router = express.Router();
+
 const VALID_VENDOR_SERVICE_TYPES = [
   "premium-venues",
   "resorts",
@@ -26,11 +27,31 @@ const VALID_VENDOR_SERVICE_TYPES = [
   "service",
 ];
 
+const serializeVendor = (vendor) => {
+  if (!vendor) {
+    return null;
+  }
+
+  return {
+    _id: vendor._id,
+    id: String(vendor._id),
+    businessName: vendor.businessName || "",
+    ownerName: vendor.ownerName || "",
+    email: vendor.email || "",
+    phone: vendor.phone || "",
+    city: vendor.city || "",
+    serviceType: vendor.serviceType || "",
+    status: vendor.status || "pending",
+    createdAt: vendor.createdAt || null,
+    updatedAt: vendor.updatedAt || null,
+  };
+};
+
 /* =========================
    TEST ROUTE
 ========================= */
 router.get("/test", (req, res) => {
-  res.json({ success: true, message: "Vendor route OK ✅" });
+  res.json({ success: true, message: "Vendor route OK" });
 });
 
 /* =========================
@@ -45,7 +66,7 @@ router.post("/register", async (req, res) => {
       email,
       city,
       serviceType,
-      password
+      password,
     } = req.body;
 
     businessName = businessName?.toString().trim();
@@ -66,25 +87,25 @@ router.post("/register", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required"
+        message: "All fields are required",
       });
     }
 
     if (!VALID_VENDOR_SERVICE_TYPES.includes(serviceType)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid service type"
+        message: "Invalid service type",
       });
     }
 
     const existingVendor = await Vendor.findOne({
-      $or: [{ email }, { phone }]
+      $or: [{ email }, { phone }],
     });
 
     if (existingVendor) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: "Vendor already exists"
+        message: "Vendor already exists",
       });
     }
 
@@ -96,7 +117,7 @@ router.post("/register", async (req, res) => {
       city,
       serviceType,
       password,
-      status: "pending"
+      status: "pending",
     });
 
     await vendor.save();
@@ -104,22 +125,21 @@ router.post("/register", async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Vendor registered successfully. Waiting for admin approval.",
-      vendor
+      vendor: serializeVendor(vendor),
     });
-
   } catch (error) {
     if (error?.code === 11000) {
       const duplicateField = Object.keys(error.keyPattern || {})[0] || "field";
       return res.status(409).json({
         success: false,
-        message: `${duplicateField} already exists`
+        message: `${duplicateField} already exists`,
       });
     }
 
     if (error?.name === "ValidationError") {
       return res.status(400).json({
         success: false,
-        message: error.message
+        message: error.message,
       });
     }
 
@@ -127,9 +147,8 @@ router.post("/register", async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message: "Internal server error"
+      message: "Internal server error",
     });
-
   }
 });
 
@@ -138,112 +157,96 @@ router.post("/register", async (req, res) => {
 ========================= */
 router.post("/login", async (req, res) => {
   try {
-
     const { identifier, password } = req.body;
 
     if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email/Phone and password required"
+        message: "Email/Phone and password required",
       });
     }
 
+    const normalizedIdentifier = String(identifier).trim().toLowerCase();
+
     const vendor = await Vendor.findOne({
-      $or: [
-        { email: identifier },
-        { phone: identifier }
-      ]
+      $or: [{ email: normalizedIdentifier }, { phone: String(identifier).trim() }],
     });
 
     if (!vendor) {
       return res.status(401).json({
         success: false,
-        message: "Invalid credentials"
+        message: "Invalid credentials",
       });
     }
 
     if (vendor.status !== "approved") {
       return res.status(403).json({
         success: false,
-        message: "Account not approved by admin yet"
+        message: "Account not approved by admin yet",
       });
     }
 
-    const isMatch = await bcrypt.compare(password, vendor.password);
+    const isMatch = await vendor.comparePassword(password);
 
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: "Invalid credentials"
+        message: "Invalid credentials",
       });
     }
 
-    const token = jwt.sign(
-      { id: vendor._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const token = generateToken({
+      id: String(vendor._id),
+      role: "vendor",
+    });
 
     res.json({
       success: true,
       message: "Login successful",
       token,
-      vendor: {
-        _id: vendor._id,
-        businessName: vendor.businessName,
-        email: vendor.email,
-        phone: vendor.phone,
-        status: vendor.status
-      }
+      vendor: serializeVendor(vendor),
     });
-
   } catch (error) {
-
-    console.error("LOGIN ERROR ❌", error);
+    console.error("LOGIN ERROR", error);
 
     res.status(500).json({
       success: false,
-      message: "Internal server error"
+      message: "Internal server error",
     });
-
   }
 });
 
 /* =========================
-   ADMIN – GET ALL VENDORS
+   ADMIN-ONLY VENDOR MANAGEMENT
 ========================= */
+router.use(requireAdmin);
+
 router.get("/all", async (req, res) => {
   try {
-
     const vendors = await Vendor.find().sort({ createdAt: -1 });
 
     res.json({
       success: true,
-      vendors
+      vendors: vendors.map(serializeVendor),
     });
-
-  } catch (err) {
+  } catch (error) {
+    console.error("FETCH VENDORS ERROR", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch vendors"
+      message: "Failed to fetch vendors",
     });
-
   }
 });
 
-/* =========================
-   ADMIN – UPDATE STATUS
-========================= */
 router.put("/status/:id", async (req, res) => {
   try {
-
     const { status } = req.body;
 
     if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status"
+        message: "Invalid status",
       });
     }
 
@@ -256,32 +259,29 @@ router.put("/status/:id", async (req, res) => {
     if (!vendor) {
       return res.status(404).json({
         success: false,
-        message: "Vendor not found"
+        message: "Vendor not found",
       });
     }
+
+    console.log(`Admin ${req.user.id} updated vendor ${vendor._id} to ${status}`);
 
     res.json({
       success: true,
       message: "Vendor status updated",
-      vendor
+      vendor: serializeVendor(vendor),
     });
-
-  } catch (err) {
+  } catch (error) {
+    console.error("UPDATE VENDOR STATUS ERROR", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to update status"
+      message: "Failed to update status",
     });
-
   }
 });
 
-/* =========================
-   ADMIN – VENDOR STATS
-========================= */
 router.get("/stats", async (req, res) => {
   try {
-
     const total = await Vendor.countDocuments();
     const pending = await Vendor.countDocuments({ status: "pending" });
     const approved = await Vendor.countDocuments({ status: "approved" });
@@ -292,31 +292,26 @@ router.get("/stats", async (req, res) => {
       total,
       pending,
       approved,
-      rejected
+      rejected,
     });
-
-  } catch (err) {
+  } catch (error) {
+    console.error("VENDOR STATS ERROR", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to load stats"
+      message: "Failed to load stats",
     });
-
   }
 });
 
-/* =========================
-   DELETE VENDOR (CASCADE)
-========================= */
 router.delete("/delete/:id", async (req, res) => {
   try {
-
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid vendor id"
+        message: "Invalid vendor id",
       });
     }
 
@@ -328,24 +323,23 @@ router.delete("/delete/:id", async (req, res) => {
     if (!deletedVendor) {
       return res.status(404).json({
         success: false,
-        message: "Vendor not found"
+        message: "Vendor not found",
       });
     }
 
+    console.log(`Admin ${req.user.id} deleted vendor ${id}`);
+
     res.json({
       success: true,
-      message: "Vendor and related data deleted successfully"
+      message: "Vendor and related data deleted successfully",
     });
-
   } catch (error) {
-
-    console.error("DELETE VENDOR ERROR ❌", error);
+    console.error("DELETE VENDOR ERROR", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to delete vendor"
+      message: "Failed to delete vendor",
     });
-
   }
 });
 

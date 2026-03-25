@@ -1,8 +1,9 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const User = require("../models/User");
+const generateToken = require("../utils/generateToken");
+const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
@@ -12,18 +13,37 @@ const router = express.Router();
 const resetOtpStore = new Map();
 
 /* =========================
-   PHONE NORMALIZER
+   HELPERS
 ========================= */
 const normalizePhone = (phone) => {
   if (!phone) return phone;
 
-  let p = phone.toString().replace(/\D/g, "");
+  let value = phone.toString().replace(/\D/g, "");
 
-  if (p.length === 10) {
-    p = "91" + p;
+  if (value.length === 10) {
+    value = `91${value}`;
   }
 
-  return p;
+  return value;
+};
+
+const serializeUser = (user) => {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    _id: user._id,
+    id: String(user._id),
+    name: user.name || "",
+    firstName: user.firstName || "",
+    lastName: user.lastName || "",
+    email: user.email || "",
+    phone: user.phone || "",
+    city: user.city || "",
+    country: user.country || "",
+    gender: user.gender || "",
+  };
 };
 
 /* =========================
@@ -57,7 +77,7 @@ router.post("/register", async (req, res) => {
     });
 
     if (existing) {
-      return res.json({
+      return res.status(409).json({
         success: false,
         message: "User already exists",
       });
@@ -78,20 +98,18 @@ router.post("/register", async (req, res) => {
       password: hashedPassword,
     });
 
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const token = generateToken({
+      id: String(user._id),
+      role: "user",
+    });
 
     res.json({
       success: true,
       token,
-      user,
+      user: serializeUser(user),
     });
-
-  } catch (err) {
-    console.error("REGISTER ERROR:", err);
+  } catch (error) {
+    console.error("REGISTER ERROR:", error);
 
     res.status(500).json({
       success: false,
@@ -105,9 +123,7 @@ router.post("/register", async (req, res) => {
 ========================= */
 router.post("/login", async (req, res) => {
   try {
-
     const { email, phone, identifier, emailOrPhone, password } = req.body;
-
     const loginValue = email || phone || identifier || emailOrPhone;
 
     if (!loginValue || !password) {
@@ -119,7 +135,7 @@ router.post("/login", async (req, res) => {
 
     let user;
 
-    if (loginValue.includes("@")) {
+    if (String(loginValue).includes("@")) {
       user = await User.findOne({
         email: loginValue.toLowerCase().trim(),
       });
@@ -130,7 +146,7 @@ router.post("/login", async (req, res) => {
     }
 
     if (!user) {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "User not found",
       });
@@ -139,55 +155,38 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
-      return res.json({
+      return res.status(401).json({
         success: false,
         message: "Invalid password",
       });
     }
 
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const token = generateToken({
+      id: String(user._id),
+      role: "user",
+    });
 
     res.json({
       success: true,
       token,
-      user,
+      user: serializeUser(user),
     });
-
-  } catch (err) {
-
-    console.error("LOGIN ERROR:", err);
+  } catch (error) {
+    console.error("LOGIN ERROR:", error);
 
     res.status(500).json({
       success: false,
       message: "Server error",
     });
-
   }
 });
 
 /* =========================
    GET CURRENT USER (ME)
 ========================= */
-router.get("/me", async (req, res) => {
+router.get("/me", authMiddleware, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.slice(7)
-      : null;
-
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Authorization token missing",
-      });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("-password");
+    const user = await User.findById(req.user.id).select("-password");
 
     if (!user) {
       return res.status(404).json({
@@ -198,10 +197,11 @@ router.get("/me", async (req, res) => {
 
     return res.json({
       success: true,
-      user,
+      user: serializeUser(user),
     });
-  } catch (err) {
-    console.error("ME ERROR:", err);
+  } catch (error) {
+    console.error("ME ERROR:", error);
+
     return res.status(401).json({
       success: false,
       message: "Invalid or expired token",
@@ -214,15 +214,13 @@ router.get("/me", async (req, res) => {
 ========================= */
 router.post("/forgot-password/send-otp", async (req, res) => {
   try {
-
     const { phone } = req.body;
-
     const cleanPhone = normalizePhone(phone);
 
     const user = await User.findOne({ phone: cleanPhone });
 
     if (!user) {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "User not found",
       });
@@ -250,16 +248,13 @@ router.post("/forgot-password/send-otp", async (req, res) => {
       success: true,
       message: "OTP sent",
     });
-
-  } catch (err) {
-
-    console.error("RESET OTP ERROR:", err.response?.data || err.message);
+  } catch (error) {
+    console.error("RESET OTP ERROR:", error.response?.data || error.message);
 
     res.status(500).json({
       success: false,
       message: "OTP send failed",
     });
-
   }
 });
 
@@ -267,32 +262,28 @@ router.post("/forgot-password/send-otp", async (req, res) => {
    VERIFY RESET OTP
 ========================= */
 router.post("/forgot-password/verify-otp", (req, res) => {
-
   const { phone, otp } = req.body;
-
   const cleanPhone = normalizePhone(phone);
-
   const data = resetOtpStore.get(cleanPhone);
 
   if (!data) {
-    return res.json({
+    return res.status(404).json({
       success: false,
       message: "OTP not found",
     });
   }
 
   if (Date.now() > data.expires) {
-
     resetOtpStore.delete(cleanPhone);
 
-    return res.json({
+    return res.status(400).json({
       success: false,
       message: "OTP expired",
     });
   }
 
   if (Number(otp) !== data.otp) {
-    return res.json({
+    return res.status(400).json({
       success: false,
       message: "Invalid OTP",
     });
@@ -301,31 +292,26 @@ router.post("/forgot-password/verify-otp", (req, res) => {
   res.json({
     success: true,
   });
-
 });
 
 /* =========================
    RESET PASSWORD
 ========================= */
 router.post("/forgot-password/reset", async (req, res) => {
-
   try {
-
     const { phone, newPassword } = req.body;
-
     const cleanPhone = normalizePhone(phone);
 
     const user = await User.findOne({ phone: cleanPhone });
 
     if (!user) {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "User not found",
       });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-
     user.password = hashedPassword;
 
     await user.save();
@@ -336,18 +322,14 @@ router.post("/forgot-password/reset", async (req, res) => {
       success: true,
       message: "Password updated",
     });
-
-  } catch (err) {
-
-    console.error("RESET PASSWORD ERROR:", err);
+  } catch (error) {
+    console.error("RESET PASSWORD ERROR:", error);
 
     res.status(500).json({
       success: false,
       message: "Password reset failed",
     });
-
   }
-
 });
 
 module.exports = router;

@@ -1,15 +1,17 @@
 const express = require("express");
-const router = express.Router();
 const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
 const Booking = require("../models/Booking");
 const Hall = require("../models/Hall");
-const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const authMiddleware = require("../middleware/authMiddleware");
 const {
   getMailErrorMessage,
   sendBookingApprovalEmail,
 } = require("../utils/bookingConfirmationEmail");
+
+const { requireAdmin, requireVendor } = authMiddleware;
+const router = express.Router();
 
 console.log("🔥 BOOKING ROUTES LOADED");
 const GST_RATE = 0.02;
@@ -77,6 +79,10 @@ const buildUserBookingQuery = (user) => {
   const last10 = phone.slice(-10);
   const conditions = [];
 
+  if (user?._id) {
+    conditions.push({ customer: user._id });
+  }
+
   if (email) {
     conditions.push({ customerEmail: email });
   }
@@ -133,10 +139,16 @@ const serializeBooking = (booking) => {
   };
 };
 
+const ensureVendorBookingAccess = (req, booking) => {
+  const vendorId = String(booking?.vendor?._id || booking?.vendor || "");
+
+  return vendorId && vendorId === String(req.user?.id || "");
+};
+
 /* =========================
    CREATE BOOKING
 ========================= */
-router.post("/create", async (req, res) => {
+router.post("/create", authMiddleware, async (req, res) => {
   try {
     const {
       hallId,
@@ -152,8 +164,6 @@ router.post("/create", async (req, res) => {
       couponCode,
       pricingBasis,
     } = req.body;
-
-    console.log("Incoming booking data:", req.body);
 
     if (
       !hallId ||
@@ -188,8 +198,12 @@ router.post("/create", async (req, res) => {
       normalizedSubtotalAmount - normalizedDiscountAmount,
       0
     );
+    const customerId =
+      matchedUser?._id ||
+      (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
 
     const booking = new Booking({
+      customer: customerId,
       hall: hallId,
       vendor: hall.vendor,
       checkIn: new Date(checkIn),
@@ -216,7 +230,7 @@ router.post("/create", async (req, res) => {
       booking,
     });
   } catch (error) {
-    console.error("BOOKING CREATE ERROR ❌", error);
+    console.error("BOOKING CREATE ERROR", error);
     res.status(500).json({
       message: "Server error while creating booking",
     });
@@ -305,27 +319,38 @@ router.get("/me/:bookingId", authMiddleware, async (req, res) => {
   }
 });
 
-router.patch("/:bookingId/payment", async (req, res) => {
+router.patch("/:bookingId/payment", authMiddleware, async (req, res) => {
   try {
     const { bookingId } = req.params;
-    const { paymentMethod, paymentStatus, amount } = req.body;
+    const { paymentMethod, paymentStatus } = req.body;
 
-    const updates = {};
-
-    if (paymentMethod) {
-      updates.paymentMethod = paymentMethod;
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      return res.status(400).json({
+        message: "Invalid booking id",
+      });
     }
 
-    if (paymentStatus) {
-      updates.paymentStatus = paymentStatus;
+    const user = await User.findById(req.user.id).select(
+      "email firstName lastName name phone"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
     }
 
-    if (amount !== undefined) {
-      updates.amount = Number(amount) || 0;
+    const query = buildUserBookingQuery(user);
+
+    if (!query) {
+      return res.status(404).json({
+        message: "Booking not found",
+      });
     }
 
-    const booking = await Booking.findByIdAndUpdate(bookingId, updates, {
-      new: true,
+    const booking = await Booking.findOne({
+      _id: bookingId,
+      ...query,
     });
 
     if (!booking) {
@@ -333,6 +358,16 @@ router.patch("/:bookingId/payment", async (req, res) => {
         message: "Booking not found",
       });
     }
+
+    if (paymentMethod && ["online", "pay_at_venue"].includes(paymentMethod)) {
+      booking.paymentMethod = paymentMethod;
+    }
+
+    if (paymentStatus && ["pending", "paid", "failed"].includes(paymentStatus)) {
+      booking.paymentStatus = paymentStatus;
+    }
+
+    await booking.save();
 
     res.json({
       message: "Payment details updated successfully",
@@ -354,8 +389,6 @@ const updateStatusHandler = async (req, res) => {
     const { bookingId } = req.params;
     const { status } = req.body;
 
-    console.log("STATUS UPDATE HIT:", bookingId, status);
-
     if (!["pending", "approved", "rejected"].includes(status)) {
       return res.status(400).json({
         message: "Invalid status value",
@@ -369,6 +402,12 @@ const updateStatusHandler = async (req, res) => {
     if (!booking) {
       return res.status(404).json({
         message: "Booking not found",
+      });
+    }
+
+    if (!ensureVendorBookingAccess(req, booking)) {
+      return res.status(403).json({
+        message: "You can manage only your own bookings",
       });
     }
 
@@ -406,6 +445,8 @@ const updateStatusHandler = async (req, res) => {
       }
     }
 
+    console.log(`Vendor ${req.user.id} updated booking ${bookingId} to ${status}`);
+
     res.json({
       message:
         status === "approved"
@@ -419,28 +460,32 @@ const updateStatusHandler = async (req, res) => {
       email,
     });
   } catch (error) {
-    console.error("UPDATE STATUS ERROR ❌", error);
+    console.error("UPDATE STATUS ERROR", error);
     res.status(500).json({
       message: "Failed to update status",
     });
   }
 };
 
-router.patch("/status/:bookingId", updateStatusHandler);
-router.put("/status/:bookingId", updateStatusHandler);
+router.patch("/status/:bookingId", requireVendor, updateStatusHandler);
+router.put("/status/:bookingId", requireVendor, updateStatusHandler);
 
 /* =========================
    GET BOOKINGS FOR A VENDOR
 ========================= */
-router.get("/vendor/:vendorId", async (req, res) => {
+router.get("/vendor/:vendorId", requireVendor, async (req, res) => {
   try {
     const { vendorId } = req.params;
-
-    console.log("Fetching bookings for vendor:", vendorId);
 
     if (!mongoose.Types.ObjectId.isValid(vendorId)) {
       return res.status(400).json({
         message: "Invalid vendor id",
+      });
+    }
+
+    if (String(vendorId) !== String(req.user.id)) {
+      return res.status(403).json({
+        message: "You can view only your own bookings",
       });
     }
 
@@ -450,7 +495,7 @@ router.get("/vendor/:vendorId", async (req, res) => {
 
     res.json(bookings);
   } catch (error) {
-    console.error("GET VENDOR BOOKINGS ERROR ❌", error);
+    console.error("GET VENDOR BOOKINGS ERROR", error);
     res.status(500).json({
       message: "Failed to fetch bookings",
       error: error.message,
@@ -465,12 +510,13 @@ router.get("/hall/:hallId", async (req, res) => {
   try {
     const { hallId } = req.params;
 
-    const bookings = await Booking.find({ hall: hallId })
-      .select("checkIn checkOut status");
+    const bookings = await Booking.find({ hall: hallId }).select(
+      "checkIn checkOut status"
+    );
 
     res.json(bookings);
   } catch (error) {
-    console.error("GET HALL BOOKINGS ERROR ❌", error);
+    console.error("GET HALL BOOKINGS ERROR", error);
     res.status(500).json({
       message: "Failed to fetch hall bookings",
     });
@@ -478,49 +524,40 @@ router.get("/hall/:hallId", async (req, res) => {
 });
 
 /* =========================
-   ✅🔥 ADMIN — GET ALL BOOKINGS (FINAL FIX)
+   ADMIN GET ALL BOOKINGS
 ========================= */
-router.get("/admin/bookings", async (req, res) => {
+router.get("/admin/bookings", requireAdmin, async (req, res) => {
   try {
-    console.log("🔥 ADMIN BOOKINGS FETCHED");
-
     const bookings = await Booking.find()
       .populate("hall", "hallName")
       .populate("vendor", "businessName")
       .sort({ createdAt: -1 });
 
-    // ⭐ CRITICAL: send calendar-ready data
-    const formatted = bookings.map((b) => ({
-      _id: b._id,
-      customerName: b.customerName,
-      customerEmail: b.customerEmail,
-      phone: b.phone,
-      eventType: b.eventType,
-      guests: b.guests,
-      status: b.status,
-      checkIn: b.checkIn,     // ✅ REQUIRED
-      checkOut: b.checkOut,   // ✅ REQUIRED
-      hallName: b.hall?.hallName || "N/A",
-      vendorName: b.vendor?.businessName || "N/A",
+    const formatted = bookings.map((booking) => ({
+      _id: booking._id,
+      customerName: booking.customerName,
+      customerEmail: booking.customerEmail,
+      phone: booking.phone,
+      eventType: booking.eventType,
+      guests: booking.guests,
+      status: booking.status,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      hallName: booking.hall?.hallName || "N/A",
+      vendorName: booking.vendor?.businessName || "N/A",
+      paymentMethod: booking.paymentMethod,
+      paymentStatus: booking.paymentStatus,
+      amount: booking.amount || 0,
+      venueAmount: booking.venueAmount || 0,
+      supportFee: booking.supportFee || 0,
+      subtotalAmount: booking.subtotalAmount || 0,
+      discountAmount: booking.discountAmount || 0,
+      couponCode: booking.couponCode || "",
     }));
 
-    console.log("Admin bookings count:", formatted.length);
-
-    const paymentAwareFormatted = formatted.map((item, index) => ({
-      ...item,
-      paymentMethod: bookings[index]?.paymentMethod,
-      paymentStatus: bookings[index]?.paymentStatus,
-      amount: bookings[index]?.amount || 0,
-      venueAmount: bookings[index]?.venueAmount || 0,
-      supportFee: bookings[index]?.supportFee || 0,
-      subtotalAmount: bookings[index]?.subtotalAmount || 0,
-      discountAmount: bookings[index]?.discountAmount || 0,
-      couponCode: bookings[index]?.couponCode || "",
-    }));
-
-    res.json(paymentAwareFormatted);
+    res.json(formatted);
   } catch (error) {
-    console.error("ADMIN BOOKINGS ERROR ❌", error);
+    console.error("ADMIN BOOKINGS ERROR", error);
     res.status(500).json({
       message: "Failed to fetch admin bookings",
     });

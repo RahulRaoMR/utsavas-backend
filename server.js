@@ -3,6 +3,8 @@ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const path = require("path");
 
 const app = express();
@@ -11,12 +13,44 @@ const app = express();
    CORS CONFIG (SAFE)
 ========================= */
 
-const allowedOrigins = [
+const defaultAllowedOrigins = [
   "http://localhost:3000",
   "https://utsavas.vercel.app",
   "https://www.utsavas.com",
   "https://utsavas.com",
 ];
+
+const allowedOrigins = (
+  process.env.CORS_ALLOWED_ORIGINS || defaultAllowedOrigins.join(",")
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const otpLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const paymentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use(
+  helmet(),
+);
 
 app.use(
   cors({
@@ -27,7 +61,7 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
@@ -37,8 +71,8 @@ app.use(
    MIDDLEWARES
 ========================= */
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 /* =========================
    STATIC FILES
@@ -61,6 +95,11 @@ const authRoutes = require("./routes/authRoutes");
 /* =========================
    API ROUTES
 ========================= */
+
+app.use("/api/auth/forgot-password", otpLimiter);
+app.use("/api/auth", authLimiter);
+app.use("/api/otp", otpLimiter);
+app.use("/api/payment", paymentLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);

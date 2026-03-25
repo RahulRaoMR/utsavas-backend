@@ -18,6 +18,13 @@ const bookingSchema = new mongoose.Schema(
       index: true,
     },
 
+    customer: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+
     // ✅ Check-in date
     checkIn: {
       type: Date,
@@ -123,6 +130,23 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: "",
+    },
+
+    razorpayOrderId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    razorpayPaymentId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    paymentVerifiedAt: {
+      type: Date,
+      default: null,
     },
   },
   { timestamps: true }

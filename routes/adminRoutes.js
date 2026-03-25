@@ -4,7 +4,10 @@ const Vendor = require("../models/Vendor");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
 const generateToken = require("../utils/generateToken");
+const { normalizeVenueCategory } = require("../utils/venueCategory");
+const authMiddleware = require("../middleware/authMiddleware");
 
+const { requireAdmin } = authMiddleware;
 const router = express.Router();
 
 /* =========================
@@ -57,6 +60,8 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+router.use(requireAdmin);
 
 /* =========================
    ADMIN DASHBOARD STATS
@@ -186,7 +191,9 @@ router.put("/halls/:id", async (req, res) => {
     }
 
     hall.hallName = hallName?.toString().trim() || hall.hallName;
-    hall.category = category?.toString().toLowerCase() || hall.category;
+    hall.category = category
+      ? normalizeVenueCategory(category)
+      : hall.category;
     hall.capacity = Number(capacity) || 0;
     hall.parkingCapacity = Number(parkingCapacity) || 0;
     hall.rooms = Number(rooms) || 0;
@@ -373,3 +380,4 @@ router.get("/bookings", async (req, res) => {
 });
 
 module.exports = router;
+  

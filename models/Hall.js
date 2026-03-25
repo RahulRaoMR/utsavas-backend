@@ -1,4 +1,9 @@
 const mongoose = require("mongoose");
+const {
+  LISTING_PLAN_VALUES,
+  getListingPlanPriority,
+  normalizeListingPlan,
+} = require("../utils/listingPlan");
 
 const HALL_CATEGORIES = [
   "premium-venues",
@@ -190,6 +195,19 @@ const hallSchema = new mongoose.Schema(
       default: [],
     },
 
+    listingPlan: {
+      type: String,
+      enum: LISTING_PLAN_VALUES,
+      default: "basic",
+      index: true,
+    },
+
+    listingPriority: {
+      type: Number,
+      default: getListingPlanPriority("basic"),
+      index: true,
+    },
+
     /* =========================
        ADMIN APPROVAL
     ========================= */
@@ -203,13 +221,21 @@ const hallSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+hallSchema.pre("validate", function (next) {
+  this.listingPlan = normalizeListingPlan(this.listingPlan);
+  this.listingPriority = getListingPlanPriority(this.listingPlan);
+  next();
+});
+
 /* =========================
    🔥 COMPOUND INDEX (FAST SEARCH)
 ========================= */
 hallSchema.index({
   "address.city": 1,
   "address.area": 1,
+  "address.pincode": 1,
   category: 1,
+  listingPriority: -1,
   status: 1,
 });
 
