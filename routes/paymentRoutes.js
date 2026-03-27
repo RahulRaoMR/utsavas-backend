@@ -21,6 +21,19 @@ const normalizePhone = (phone) => {
 
 const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 
+const buildReceiptId = (bookingId) => {
+  const bookingPart = String(bookingId || "").slice(-12);
+  const timePart = Date.now().toString().slice(-8);
+
+  return `bk_${bookingPart}_${timePart}`;
+};
+
+const getPaymentErrorMessage = (error, fallbackMessage) =>
+  error?.error?.description ||
+  error?.description ||
+  error?.message ||
+  fallbackMessage;
+
 const bookingBelongsToUser = (booking, user) => {
   if (!booking || !user) {
     return false;
@@ -82,7 +95,7 @@ router.post("/create-order", authMiddleware, async (req, res) => {
     const order = await razorpay.orders.create({
       amount: Math.round(bookingAmount * 100),
       currency: "INR",
-      receipt: `booking_${booking._id}_${Date.now()}`,
+      receipt: buildReceiptId(booking._id),
       notes: {
         bookingId: String(booking._id),
       },
@@ -96,7 +109,9 @@ router.post("/create-order", authMiddleware, async (req, res) => {
     res.json(order);
   } catch (error) {
     console.error("CREATE ORDER ERROR", error);
-    res.status(500).json({ message: error.message || "Failed to create order" });
+    res.status(500).json({
+      message: getPaymentErrorMessage(error, "Failed to create order"),
+    });
   }
 });
 
@@ -159,7 +174,9 @@ router.post("/verify", authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error("VERIFY PAYMENT ERROR", error);
-    res.status(500).json({ message: error.message || "Payment verification failed" });
+    res.status(500).json({
+      message: getPaymentErrorMessage(error, "Payment verification failed"),
+    });
   }
 });
 
