@@ -40,6 +40,31 @@ const ensureVendorOwnership = (req, targetVendorId) => {
   };
 };
 
+const normalizeStartOfDay = (value) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const normalizeEndOfDay = (value) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setHours(23, 59, 59, 999);
+  return date;
+};
+
+const rangesOverlap = (startA, endA, startB, endB) =>
+  startA <= endB && endA >= startB;
+
 /* =====================================================
    SEARCH HALLS (MAIN FILTER API)
 ===================================================== */
@@ -219,6 +244,143 @@ router.get("/vendor/:vendorId", requireVendor, async (req, res) => {
   } catch (error) {
     console.error("VENDOR HALLS ERROR", error);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   VENDOR OFFLINE DATE BLOCKS
+===================================================== */
+router.post("/:id/offline-bookings", requireVendor, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { startDate, endDate, note } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      vendor: new mongoose.Types.ObjectId(getAuthenticatedVendorId(req)),
+    });
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found for this vendor" });
+    }
+
+    const normalizedStartDate = normalizeStartOfDay(startDate);
+    const normalizedEndDate = normalizeEndOfDay(endDate);
+
+    if (!normalizedStartDate || !normalizedEndDate) {
+      return res.status(400).json({ message: "Valid start and end dates are required" });
+    }
+
+    if (normalizedStartDate > normalizedEndDate) {
+      return res
+        .status(400)
+        .json({ message: "End date must be on or after the start date" });
+    }
+
+    const overlappingApprovedBooking = await Booking.findOne({
+      hall: hall._id,
+      status: "approved",
+      checkIn: { $lte: normalizedEndDate },
+      checkOut: { $gte: normalizedStartDate },
+    }).select("_id checkIn checkOut");
+
+    if (overlappingApprovedBooking) {
+      return res.status(409).json({
+        message: "These dates already have an approved booking",
+      });
+    }
+
+    const overlappingOfflineBooking = (hall.offlineBookings || []).find((block) =>
+      rangesOverlap(
+        normalizedStartDate,
+        normalizedEndDate,
+        new Date(block.startDate),
+        new Date(block.endDate)
+      )
+    );
+
+    if (overlappingOfflineBooking) {
+      return res.status(409).json({
+        message: "These dates are already blocked as offline booked",
+      });
+    }
+
+    const normalizedNote =
+      String(note || "Offline booked").trim() || "Offline booked";
+    const offlineBooking = {
+      _id: new mongoose.Types.ObjectId(),
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+      note: normalizedNote,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    await Hall.updateOne(
+      { _id: hall._id, vendor: hall.vendor },
+      {
+        $push: {
+          offlineBookings: offlineBooking,
+        },
+      }
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Offline booking dates blocked successfully",
+      offlineBooking,
+    });
+  } catch (error) {
+    console.error("CREATE OFFLINE BOOKING ERROR", error);
+    return res.status(500).json({ message: "Failed to block offline booking dates" });
+  }
+});
+
+router.delete("/:id/offline-bookings/:offlineBookingId", requireVendor, async (req, res) => {
+  try {
+    const { id, offlineBookingId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      vendor: new mongoose.Types.ObjectId(getAuthenticatedVendorId(req)),
+    });
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found for this vendor" });
+    }
+
+    const offlineBooking = hall.offlineBookings.id(offlineBookingId);
+
+    if (!offlineBooking) {
+      return res.status(404).json({ message: "Offline booking block not found" });
+    }
+
+    await Hall.updateOne(
+      { _id: hall._id, vendor: hall.vendor },
+      {
+        $pull: {
+          offlineBookings: {
+            _id: offlineBooking._id,
+          },
+        },
+      }
+    );
+
+    return res.json({
+      success: true,
+      message: "Offline booking block removed successfully",
+    });
+  } catch (error) {
+    console.error("DELETE OFFLINE BOOKING ERROR", error);
+    return res.status(500).json({ message: "Failed to remove offline booking block" });
   }
 });
 

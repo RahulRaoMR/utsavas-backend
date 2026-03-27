@@ -145,6 +145,31 @@ const ensureVendorBookingAccess = (req, booking) => {
   return vendorId && vendorId === String(req.user?.id || "");
 };
 
+const serializeOfflineBooking = (hall, offlineBooking) => ({
+  _id: `offline-${String(offlineBooking?._id || "")}`,
+  offlineBookingId: offlineBooking?._id || null,
+  customerName: offlineBooking?.note || "Offline booked",
+  customerEmail: "",
+  phone: "",
+  eventType: "Offline booking",
+  guests: 0,
+  status: "offline",
+  checkIn: offlineBooking?.startDate || null,
+  checkOut: offlineBooking?.endDate || null,
+  createdAt: offlineBooking?.createdAt || null,
+  updatedAt: offlineBooking?.updatedAt || null,
+  hall: hall
+    ? {
+        _id: hall._id,
+        hallName: hall.hallName || "N/A",
+        address: hall.address || {},
+      }
+    : null,
+  vendor: hall?.vendor || null,
+  source: "offline",
+  note: offlineBooking?.note || "Offline booked",
+});
+
 /* =========================
    CREATE BOOKING
 ========================= */
@@ -493,7 +518,23 @@ router.get("/vendor/:vendorId", requireVendor, async (req, res) => {
       .populate("hall", "hallName address")
       .sort({ createdAt: -1 });
 
-    res.json(bookings);
+    const halls = await Hall.find({ vendor: vendorId }).select(
+      "_id hallName address vendor offlineBookings"
+    );
+
+    const offlineBookings = halls.flatMap((hall) =>
+      (hall.offlineBookings || []).map((offlineBooking) =>
+        serializeOfflineBooking(hall, offlineBooking)
+      )
+    );
+
+    const combinedBookings = [...bookings, ...offlineBookings].sort((left, right) => {
+      const leftDate = new Date(left.checkIn || left.createdAt || 0).getTime();
+      const rightDate = new Date(right.checkIn || right.createdAt || 0).getTime();
+      return rightDate - leftDate;
+    });
+
+    res.json(combinedBookings);
   } catch (error) {
     console.error("GET VENDOR BOOKINGS ERROR", error);
     res.status(500).json({
@@ -514,7 +555,15 @@ router.get("/hall/:hallId", async (req, res) => {
       "checkIn checkOut status"
     );
 
-    res.json(bookings);
+    const hall = await Hall.findById(hallId).select(
+      "_id hallName address vendor offlineBookings"
+    );
+
+    const offlineBookings = (hall?.offlineBookings || []).map((offlineBooking) =>
+      serializeOfflineBooking(hall, offlineBooking)
+    );
+
+    res.json([...bookings, ...offlineBookings]);
   } catch (error) {
     console.error("GET HALL BOOKINGS ERROR", error);
     res.status(500).json({

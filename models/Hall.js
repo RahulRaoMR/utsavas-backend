@@ -23,6 +23,28 @@ const HALL_CATEGORIES = [
   "banquet",
 ];
 
+const offlineBookingSchema = new mongoose.Schema(
+  {
+    startDate: {
+      type: Date,
+      required: true,
+    },
+    endDate: {
+      type: Date,
+      required: true,
+    },
+    note: {
+      type: String,
+      trim: true,
+      default: "Offline booked",
+    },
+  },
+  {
+    _id: true,
+    timestamps: true,
+  }
+);
+
 const hallSchema = new mongoose.Schema(
   {
     /* =========================
@@ -216,6 +238,11 @@ const hallSchema = new mongoose.Schema(
       enum: ["pending", "approved", "rejected"],
       default: "pending",
       index: true,
+    },
+
+    offlineBookings: {
+      type: [offlineBookingSchema],
+      default: [],
     },
   },
   { timestamps: true }
