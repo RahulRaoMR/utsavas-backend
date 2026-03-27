@@ -197,6 +197,15 @@ function getResendConfig() {
   return cachedResendConfig;
 }
 
+function hasSmtpConfig() {
+  const smtpHost = pickEnv("SMTP_HOST", "MAIL_HOST", "EMAIL_HOST");
+  const smtpPort = pickEnv("SMTP_PORT", "MAIL_PORT", "EMAIL_PORT");
+  const smtpUser = pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER");
+  const smtpPass = pickEnv("SMTP_PASS", "MAIL_PASS", "EMAIL_PASS");
+
+  return Boolean(smtpHost && smtpPort && smtpUser && smtpPass);
+}
+
 function getMailErrorMessage(error) {
   if (!error) {
     return "Confirmation email could not be sent right now.";
@@ -356,50 +365,44 @@ function buildText(data) {
   ].join("\n");
 }
 
-async function sendBookingApprovalEmail(booking) {
-  if (!booking?.customerEmail) {
-    throw new Error("Customer email is missing for this booking.");
-  }
-
-  const mailData = buildMailData(booking);
-  const html = buildHtml(mailData);
-  const text = buildText(mailData);
-  const resendConfig = getResendConfig();
-
-  if (resendConfig) {
-    const payload = {
-      from: resendConfig.from,
-      to: [mailData.customerEmail],
-      subject: `Your UTSAVAS booking is confirmed at ${mailData.hallName}`,
-      html,
-      text,
-      attachments: [
-        {
-          filename: `UTSAVAS-Invoice-${mailData.bookingReference}.html`,
-          content: Buffer.from(html, "utf8").toString("base64"),
-        },
-      ],
-      tags: [
-        { name: "source", value: "booking_approval" },
-        { name: "booking_id", value: mailData.bookingReference.replace(/[^a-zA-Z0-9_-]/g, "") },
-      ],
-    };
-
-    if (resendConfig.replyTo) {
-      payload.reply_to = resendConfig.replyTo;
-    }
-
-    const response = await axios.post("https://api.resend.com/emails", payload, {
-      headers: {
-        Authorization: `Bearer ${resendConfig.apiKey}`,
-        "Content-Type": "application/json",
+async function sendViaResend(mailData, html, text, resendConfig) {
+  const payload = {
+    from: resendConfig.from,
+    to: [mailData.customerEmail],
+    subject: `Your UTSAVAS booking is confirmed at ${mailData.hallName}`,
+    html,
+    text,
+    attachments: [
+      {
+        filename: `UTSAVAS-Invoice-${mailData.bookingReference}.html`,
+        content: Buffer.from(html, "utf8").toString("base64"),
       },
-      timeout: 20000,
-    });
+    ],
+    tags: [
+      { name: "source", value: "booking_approval" },
+      {
+        name: "booking_id",
+        value: mailData.bookingReference.replace(/[^a-zA-Z0-9_-]/g, ""),
+      },
+    ],
+  };
 
-    return response.data;
+  if (resendConfig.replyTo) {
+    payload.reply_to = resendConfig.replyTo;
   }
 
+  const response = await axios.post("https://api.resend.com/emails", payload, {
+    headers: {
+      Authorization: `Bearer ${resendConfig.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 20000,
+  });
+
+  return response.data;
+}
+
+async function sendViaSmtp(mailData, html, text) {
   const transporter = getTransporter();
   const smtpUser = pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER");
   const fromAddress =
@@ -420,6 +423,54 @@ async function sendBookingApprovalEmail(booking) {
       },
     ],
   });
+}
+
+async function sendBookingApprovalEmail(booking) {
+  if (!booking?.customerEmail) {
+    throw new Error("Customer email is missing for this booking.");
+  }
+
+  const mailData = buildMailData(booking);
+  const html = buildHtml(mailData);
+  const text = buildText(mailData);
+  const resendConfig = getResendConfig();
+  let resendError = null;
+
+  if (resendConfig) {
+    try {
+      return await sendViaResend(mailData, html, text, resendConfig);
+    } catch (error) {
+      resendError = error;
+      console.error("RESEND BOOKING EMAIL ERROR", error?.response?.data || error);
+    }
+  }
+
+  if (hasSmtpConfig()) {
+    try {
+      return await sendViaSmtp(mailData, html, text);
+    } catch (error) {
+      console.error("SMTP BOOKING EMAIL ERROR", error);
+
+      if (resendError) {
+        const combinedError = new Error(
+          `Resend failed and SMTP failed: ${error.message || "Unknown SMTP error"}`
+        );
+        combinedError.code = error.code || resendError.code;
+        combinedError.responseCode = error.responseCode || resendError.responseCode;
+        combinedError.resendError = resendError;
+        combinedError.smtpError = error;
+        throw combinedError;
+      }
+
+      throw error;
+    }
+  }
+
+  if (resendError) {
+    throw resendError;
+  }
+
+  throw buildMailConfigError();
 }
 
 module.exports = {
