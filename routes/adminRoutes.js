@@ -10,6 +10,194 @@ const authMiddleware = require("../middleware/authMiddleware");
 const { requireAdmin } = authMiddleware;
 const router = express.Router();
 
+const normalizeAnalyticsDay = (value = new Date()) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const getAnalyticsDateKey = (value = new Date()) => {
+  const date = normalizeAnalyticsDay(value);
+  return date ? date.toISOString().split("T")[0] : "";
+};
+
+const parseAnalyticsMonth = (value) => {
+  const normalizedValue =
+    typeof value === "string" && /^\d{4}-\d{2}$/.test(value)
+      ? value
+      : new Date().toISOString().slice(0, 7);
+
+  const [year, month] = normalizedValue.split("-").map(Number);
+  const monthStart = new Date(year, (month || 1) - 1, 1);
+
+  if (Number.isNaN(monthStart.getTime())) {
+    const fallbackDate = new Date();
+    return {
+      value: fallbackDate.toISOString().slice(0, 7),
+      monthStart: new Date(fallbackDate.getFullYear(), fallbackDate.getMonth(), 1),
+    };
+  }
+
+  return {
+    value: normalizedValue,
+    monthStart,
+  };
+};
+
+const summarizeHallAnalytics = (
+  hall,
+  monthStart,
+  monthEnd,
+  chartLookup = null
+) => {
+  const monthlyStats = (hall.analyticsDaily || []).filter((entry) => {
+    const entryDate = new Date(entry.date || entry.dateKey);
+    return entryDate >= monthStart && entryDate <= monthEnd;
+  });
+
+  const hallViews = monthlyStats.reduce(
+    (sum, entry) => sum + (Number(entry.hallViews) || 0),
+    0
+  );
+  const phoneViews = monthlyStats.reduce(
+    (sum, entry) => sum + (Number(entry.phoneViews) || 0),
+    0
+  );
+
+  if (chartLookup) {
+    monthlyStats.forEach((entry) => {
+      const key = getAnalyticsDateKey(entry.date || entry.dateKey);
+      const chartEntry = chartLookup[key];
+
+      if (!chartEntry) {
+        return;
+      }
+
+      chartEntry.hallViews += Number(entry.hallViews) || 0;
+      chartEntry.phoneViews += Number(entry.phoneViews) || 0;
+    });
+  }
+
+  return {
+    hallId: String(hall._id),
+    hallName: hall.hallName || "Untitled hall",
+    vendorName: hall.vendor?.businessName || "Vendor unavailable",
+    hallViews,
+    phoneViews,
+  };
+};
+
+const buildAdminAnalyticsPayload = (halls, monthValue, selectedHallId) => {
+  const { value, monthStart } = parseAnalyticsMonth(monthValue);
+  const monthEnd = new Date(
+    monthStart.getFullYear(),
+    monthStart.getMonth() + 1,
+    0,
+    23,
+    59,
+    59,
+    999
+  );
+  const daysInMonth = new Date(
+    monthStart.getFullYear(),
+    monthStart.getMonth() + 1,
+    0
+  ).getDate();
+
+  const chartData = Array.from({ length: daysInMonth }, (_, index) => {
+    const date = new Date(
+      monthStart.getFullYear(),
+      monthStart.getMonth(),
+      index + 1
+    );
+
+    return {
+      dateKey: getAnalyticsDateKey(date),
+      label: date.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+      }),
+      hallViews: 0,
+      phoneViews: 0,
+    };
+  });
+
+  const chartLookup = chartData.reduce((lookup, entry) => {
+    lookup[entry.dateKey] = entry;
+    return lookup;
+  }, {});
+
+  const availableHalls = halls
+    .map((hall) => ({
+      hallId: String(hall._id),
+      hallName: hall.hallName || "Untitled hall",
+      vendorName: hall.vendor?.businessName || "Vendor unavailable",
+      hallStatus: hall.status || "pending",
+    }))
+    .sort((left, right) =>
+      left.hallName.localeCompare(right.hallName, "en", {
+        sensitivity: "base",
+      })
+    );
+
+  const selectedHall =
+    halls.find((hall) => String(hall._id) === String(selectedHallId || "")) || null;
+
+  const hallBreakdown = halls
+    .map((hall) => summarizeHallAnalytics(hall, monthStart, monthEnd))
+    .sort(
+      (left, right) =>
+        right.hallViews - left.hallViews || right.phoneViews - left.phoneViews
+    );
+
+  const scopedHalls = selectedHall ? [selectedHall] : halls;
+  const scopedBreakdown = scopedHalls
+    .map((hall) =>
+      summarizeHallAnalytics(hall, monthStart, monthEnd, chartLookup)
+    )
+    .sort(
+      (left, right) =>
+        right.hallViews - left.hallViews || right.phoneViews - left.phoneViews
+    );
+
+  const totals = scopedBreakdown.reduce(
+    (summary, hall) => {
+      summary.hallViews += hall.hallViews;
+      summary.phoneViews += hall.phoneViews;
+      return summary;
+    },
+    {
+      hallViews: 0,
+      phoneViews: 0,
+    }
+  );
+
+  const selectedHallSummary = selectedHall ? scopedBreakdown[0] || null : null;
+
+  return {
+    month: value,
+    scope: selectedHallSummary ? "hall" : "all",
+    availableHalls,
+    selectedHallId: selectedHallSummary?.hallId || "",
+    selectedHall: selectedHallSummary,
+    chartData,
+    hallBreakdown,
+    totals: {
+      hallViews: totals.hallViews,
+      phoneViews: totals.phoneViews,
+      trackedHalls: scopedBreakdown.filter(
+        (hall) => hall.hallViews > 0 || hall.phoneViews > 0
+      ).length,
+      totalHalls: halls.length,
+    },
+  };
+};
+
 /* =========================
    ADMIN LOGIN
 ========================= */
@@ -68,17 +256,33 @@ router.use(requireAdmin);
 ========================= */
 router.get("/dashboard-stats", async (req, res) => {
   try {
-    const totalVendors = await Vendor.countDocuments();
-    const pendingVendors = await Vendor.countDocuments({ status: "pending" });
-
-    const totalHalls = await Hall.countDocuments();
-    const pendingHalls = await Hall.countDocuments({ status: "pending" });
+    const [
+      totalVendors,
+      pendingVendors,
+      totalHalls,
+      pendingHalls,
+      analyticsHalls,
+    ] = await Promise.all([
+      Vendor.countDocuments(),
+      Vendor.countDocuments({ status: "pending" }),
+      Hall.countDocuments(),
+      Hall.countDocuments({ status: "pending" }),
+      Hall.find()
+        .select("hallName analyticsDaily vendor status")
+        .populate("vendor", "businessName")
+        .lean(),
+    ]);
 
     res.json({
       totalVendors,
       pendingVendors,
       totalHalls,
       pendingHalls,
+      analytics: buildAdminAnalyticsPayload(
+        analyticsHalls,
+        req.query.month,
+        req.query.hallId
+      ),
     });
   } catch (error) {
     console.error("ADMIN DASHBOARD STATS ERROR ❌", error);

@@ -3,6 +3,8 @@ const mongoose = require("mongoose");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
 const {
+  getListingPlanDetails,
+  getListingPlanMonthlyCost,
   normalizeListingPlan,
   sortHallsByListingPriority,
 } = require("../utils/listingPlan");
@@ -64,6 +66,199 @@ const normalizeEndOfDay = (value) => {
 
 const rangesOverlap = (startA, endA, startB, endB) =>
   startA <= endB && endA >= startB;
+
+const normalizeAnalyticsDay = (value = new Date()) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const getAnalyticsDateKey = (value = new Date()) => {
+  const date = normalizeAnalyticsDay(value);
+  return date ? date.toISOString().split("T")[0] : "";
+};
+
+const parseAnalyticsMonth = (value) => {
+  const normalizedValue =
+    typeof value === "string" && /^\d{4}-\d{2}$/.test(value)
+      ? value
+      : new Date().toISOString().slice(0, 7);
+
+  const [year, month] = normalizedValue.split("-").map(Number);
+  const monthStart = new Date(year, (month || 1) - 1, 1);
+
+  if (Number.isNaN(monthStart.getTime())) {
+    const fallbackDate = new Date();
+    return {
+      value: fallbackDate.toISOString().slice(0, 7),
+      monthStart: new Date(fallbackDate.getFullYear(), fallbackDate.getMonth(), 1),
+    };
+  }
+
+  return {
+    value: normalizedValue,
+    monthStart,
+  };
+};
+
+const incrementHallAnalyticsMetric = async (hallId, metric) => {
+  const day = normalizeAnalyticsDay();
+  const dateKey = getAnalyticsDateKey(day);
+
+  if (!day || !dateKey || !["hallViews", "phoneViews"].includes(metric)) {
+    return;
+  }
+
+  const updateExisting = await Hall.updateOne(
+    {
+      _id: hallId,
+      "analyticsDaily.dateKey": dateKey,
+    },
+    {
+      $inc: {
+        [`analyticsDaily.$.${metric}`]: 1,
+      },
+    }
+  );
+
+  if (updateExisting.matchedCount > 0) {
+    return;
+  }
+
+  await Hall.updateOne(
+    { _id: hallId },
+    {
+      $push: {
+        analyticsDaily: {
+          dateKey,
+          date: day,
+          hallViews: metric === "hallViews" ? 1 : 0,
+          phoneViews: metric === "phoneViews" ? 1 : 0,
+        },
+      },
+    }
+  );
+};
+
+const buildVendorAnalyticsPayload = (halls, monthValue) => {
+  const { value, monthStart } = parseAnalyticsMonth(monthValue);
+  const monthEnd = new Date(
+    monthStart.getFullYear(),
+    monthStart.getMonth() + 1,
+    0,
+    23,
+    59,
+    59,
+    999
+  );
+
+  const daysInMonth = new Date(
+    monthStart.getFullYear(),
+    monthStart.getMonth() + 1,
+    0
+  ).getDate();
+
+  const chartData = Array.from({ length: daysInMonth }, (_, index) => {
+    const date = new Date(
+      monthStart.getFullYear(),
+      monthStart.getMonth(),
+      index + 1
+    );
+
+    return {
+      dateKey: getAnalyticsDateKey(date),
+      label: date.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+      }),
+      hallViews: 0,
+      phoneViews: 0,
+    };
+  });
+
+  const chartLookup = chartData.reduce((lookup, entry) => {
+    lookup[entry.dateKey] = entry;
+    return lookup;
+  }, {});
+
+  const hallBreakdown = halls
+    .map((hall) => {
+      const monthlyStats = (hall.analyticsDaily || []).filter((entry) => {
+        const entryDate = new Date(entry.date || entry.dateKey);
+        return entryDate >= monthStart && entryDate <= monthEnd;
+      });
+
+      const hallViews = monthlyStats.reduce(
+        (sum, entry) => sum + (Number(entry.hallViews) || 0),
+        0
+      );
+      const phoneViews = monthlyStats.reduce(
+        (sum, entry) => sum + (Number(entry.phoneViews) || 0),
+        0
+      );
+      const monthlyPlanCost = getListingPlanMonthlyCost(hall.listingPlan);
+      const estimatedCpc = hallViews > 0 ? monthlyPlanCost / hallViews : 0;
+      const listingPlan = getListingPlanDetails(hall.listingPlan);
+
+      monthlyStats.forEach((entry) => {
+        const key = getAnalyticsDateKey(entry.date || entry.dateKey);
+        const chartEntry = chartLookup[key];
+
+        if (!chartEntry) {
+          return;
+        }
+
+        chartEntry.hallViews += Number(entry.hallViews) || 0;
+        chartEntry.phoneViews += Number(entry.phoneViews) || 0;
+      });
+
+      return {
+        hallId: String(hall._id),
+        hallName: hall.hallName || "Untitled hall",
+        listingPlan: listingPlan?.name || hall.listingPlan || "Basic Listing",
+        monthlyPlanCost,
+        hallViews,
+        phoneViews,
+        estimatedCpc,
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.hallViews - left.hallViews || right.phoneViews - left.phoneViews
+    );
+
+  const totals = hallBreakdown.reduce(
+    (summary, hall) => {
+      summary.hallViews += hall.hallViews;
+      summary.phoneViews += hall.phoneViews;
+      summary.monthlyPlanCost += hall.monthlyPlanCost;
+      return summary;
+    },
+    {
+      hallViews: 0,
+      phoneViews: 0,
+      monthlyPlanCost: 0,
+    }
+  );
+
+  return {
+    month: value,
+    chartData,
+    hallBreakdown,
+    totals: {
+      hallViews: totals.hallViews,
+      phoneViews: totals.phoneViews,
+      monthlyPlanCost: totals.monthlyPlanCost,
+      estimatedCpc:
+        totals.hallViews > 0 ? totals.monthlyPlanCost / totals.hallViews : 0,
+    },
+  };
+};
 
 /* =====================================================
    SEARCH HALLS (MAIN FILTER API)
@@ -244,6 +439,42 @@ router.get("/vendor/:vendorId", requireVendor, async (req, res) => {
   } catch (error) {
     console.error("VENDOR HALLS ERROR", error);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/vendor/:vendorId/analytics", requireVendor, async (req, res) => {
+  try {
+    const ownership = ensureVendorOwnership(req, req.params.vendorId);
+
+    if (!ownership.ok) {
+      return res.status(ownership.status).json({ message: ownership.message });
+    }
+
+    const hallFilterId = String(req.query.hallId || "").trim();
+    const hallQuery = {
+      vendor: new mongoose.Types.ObjectId(ownership.vendorId),
+      status: "approved",
+    };
+
+    if (hallFilterId) {
+      if (!mongoose.Types.ObjectId.isValid(hallFilterId)) {
+        return res.status(400).json({ message: "Invalid hall id" });
+      }
+
+      hallQuery._id = new mongoose.Types.ObjectId(hallFilterId);
+    }
+
+    const halls = await Hall.find(hallQuery)
+      .select("hallName listingPlan analyticsDaily")
+      .lean();
+
+    return res.json({
+      success: true,
+      data: buildVendorAnalyticsPayload(halls, req.query.month),
+    });
+  } catch (error) {
+    console.error("VENDOR ANALYTICS ERROR", error);
+    return res.status(500).json({ message: "Failed to fetch hall analytics" });
   }
 });
 
@@ -434,10 +665,79 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ message: "Hall not found" });
     }
 
+    if (
+      hall.status === "approved" &&
+      String(req.query.trackView || "").toLowerCase() === "true"
+    ) {
+      try {
+        await incrementHallAnalyticsMetric(hall._id, "hallViews");
+      } catch (analyticsError) {
+        console.error("TRACK HALL VIEW ERROR", analyticsError);
+      }
+    }
+
     res.json(hall);
   } catch (error) {
     console.error("FETCH HALL ERROR", error);
     res.status(500).json({ message: "Failed to fetch hall" });
+  }
+});
+
+router.post("/:id/analytics/hall-view", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      status: "approved",
+    }).select("_id");
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found" });
+    }
+
+    await incrementHallAnalyticsMetric(hall._id, "hallViews");
+
+    return res.json({
+      success: true,
+      message: "Hall view tracked successfully",
+    });
+  } catch (error) {
+    console.error("TRACK HALL VIEW ERROR", error);
+    return res.status(500).json({ message: "Failed to track hall view" });
+  }
+});
+
+router.post("/:id/analytics/phone-view", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      status: "approved",
+    }).select("_id");
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found" });
+    }
+
+    await incrementHallAnalyticsMetric(hall._id, "phoneViews");
+
+    return res.json({
+      success: true,
+      message: "Phone view tracked successfully",
+    });
+  } catch (error) {
+    console.error("TRACK PHONE VIEW ERROR", error);
+    return res.status(500).json({ message: "Failed to track phone view" });
   }
 });
 

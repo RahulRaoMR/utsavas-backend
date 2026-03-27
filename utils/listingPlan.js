@@ -4,6 +4,8 @@ const LISTING_PLANS = [
     name: "Basic Listing",
     badge: "Entry Plan",
     price: "\u20B91,000",
+    amountValue: 1000,
+    billingCycleMonths: 3,
     bestFor: "Small halls, new properties",
     validity: "Valid for 3 months",
     features: [
@@ -21,6 +23,8 @@ const LISTING_PLANS = [
     name: "Featured Listing",
     badge: "Standard Plan",
     price: "\u20B93,999 per property / year",
+    amountValue: 3999,
+    billingCycleMonths: 12,
     bestFor: "Medium banquet halls, resorts, farms",
     validity: "Validity - 1 year",
     features: [
@@ -38,6 +42,8 @@ const LISTING_PLANS = [
     name: "Premium / Exclusive Listing",
     badge: "Pro Plan",
     price: "\u20B99,999 per property / year",
+    amountValue: 9999,
+    billingCycleMonths: 12,
     bestFor: "Premium wedding venues, resorts, convention halls",
     validity: "Validity - 1 year",
     features: [
@@ -90,6 +96,14 @@ function getListingPlanPriority(value) {
   return getListingPlanDetails(value).priority;
 }
 
+function getListingPlanMonthlyCost(value) {
+  const details = getListingPlanDetails(value);
+  const totalAmount = Number(details?.amountValue) || 0;
+  const billingCycleMonths = Number(details?.billingCycleMonths) || 1;
+
+  return billingCycleMonths > 0 ? totalAmount / billingCycleMonths : totalAmount;
+}
+
 function getHallListingPriority(hall) {
   const explicitPriority = Number(hall?.listingPriority);
 
@@ -122,6 +136,7 @@ module.exports = {
   LISTING_PLANS,
   LISTING_PLAN_VALUES,
   getListingPlanDetails,
+  getListingPlanMonthlyCost,
   getListingPlanPriority,
   normalizeListingPlan,
   sortHallsByListingPriority,

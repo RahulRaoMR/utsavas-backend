@@ -45,6 +45,33 @@ const offlineBookingSchema = new mongoose.Schema(
   }
 );
 
+const analyticsDailySchema = new mongoose.Schema(
+  {
+    dateKey: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    date: {
+      type: Date,
+      required: true,
+    },
+    hallViews: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    phoneViews: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  {
+    _id: false,
+  }
+);
+
 const hallSchema = new mongoose.Schema(
   {
     /* =========================
@@ -242,6 +269,11 @@ const hallSchema = new mongoose.Schema(
 
     offlineBookings: {
       type: [offlineBookingSchema],
+      default: [],
+    },
+
+    analyticsDaily: {
+      type: [analyticsDailySchema],
       default: [],
     },
   },
