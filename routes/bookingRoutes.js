@@ -450,6 +450,7 @@ const updateStatusHandler = async (req, res) => {
       sent: false,
       skipped: false,
       error: "",
+      notice: "",
     };
 
     if (status === "approved") {
@@ -458,6 +459,8 @@ const updateStatusHandler = async (req, res) => {
           sent: false,
           skipped: true,
           error: "Customer email is not available for this booking.",
+          notice:
+            "Booking approved successfully. Customer email is unavailable, so no confirmation email was sent.",
         };
       } else {
         try {
@@ -466,6 +469,8 @@ const updateStatusHandler = async (req, res) => {
         } catch (mailError) {
           console.error("BOOKING APPROVAL EMAIL ERROR", mailError);
           email.error = getMailErrorMessage(mailError);
+          email.notice =
+            "Booking approved successfully. Confirmation email could not be sent right now.";
         }
       }
     }
@@ -478,8 +483,8 @@ const updateStatusHandler = async (req, res) => {
           ? email.sent
             ? "Booking approved and confirmation email sent"
             : email.skipped
-            ? "Booking approved, but customer email is unavailable"
-            : "Booking approved, but confirmation email failed"
+            ? email.notice || "Booking approved successfully"
+            : email.notice || "Booking approved successfully"
           : "Status updated successfully",
       booking,
       email,

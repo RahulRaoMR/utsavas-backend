@@ -3,6 +3,7 @@ const nodemailer = require("nodemailer");
 
 let cachedTransporter = null;
 let cachedResendConfig = null;
+const SIMPLE_EMAIL_REGEX = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 
 function pickEnv(...keys) {
   for (const key of keys) {
@@ -21,6 +22,62 @@ function buildMailConfigError() {
   );
   error.code = "MAIL_NOT_CONFIGURED";
   return error;
+}
+
+function stripWrappingQuotes(value) {
+  let normalizedValue = String(value || "").trim();
+
+  while (
+    normalizedValue.length >= 2 &&
+    ((normalizedValue.startsWith('"') && normalizedValue.endsWith('"')) ||
+      (normalizedValue.startsWith("'") && normalizedValue.endsWith("'")))
+  ) {
+    normalizedValue = normalizedValue.slice(1, -1).trim();
+  }
+
+  return normalizedValue;
+}
+
+function normalizeMailbox(value) {
+  const normalizedValue = stripWrappingQuotes(value).replace(/\s+/g, " ").trim();
+
+  if (!normalizedValue) {
+    return "";
+  }
+
+  if (SIMPLE_EMAIL_REGEX.test(normalizedValue)) {
+    return normalizedValue.toLowerCase();
+  }
+
+  const displayMatch = normalizedValue.match(
+    /^(.*?)\s*<\s*([^<>\s]+@[^<>\s]+\.[^<>\s]+)\s*>$/
+  );
+
+  if (displayMatch) {
+    const displayName = stripWrappingQuotes(displayMatch[1]).replace(/\s+/g, " ").trim();
+    const email = displayMatch[2].trim().toLowerCase();
+
+    return displayName ? `${displayName} <${email}>` : email;
+  }
+
+  const embeddedEmailMatch = normalizedValue.match(
+    /([^<>\s]+@[^<>\s]+\.[^<>\s]+)/
+  );
+
+  if (embeddedEmailMatch) {
+    const email = embeddedEmailMatch[1].trim().toLowerCase();
+    const displayName = stripWrappingQuotes(
+      normalizedValue
+        .replace(embeddedEmailMatch[1], "")
+        .replace(/[<>]/g, " ")
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return displayName ? `${displayName} <${email}>` : email;
+  }
+
+  return "";
 }
 
 function formatCurrency(amount) {
@@ -114,12 +171,17 @@ function getResendConfig() {
   }
 
   const apiKey = pickEnv("RESEND_API_KEY");
-  const from = pickEnv(
-    "RESEND_FROM_EMAIL",
-    "RESEND_FROM",
-    "MAIL_FROM",
-    "EMAIL_FROM",
-    "SMTP_FROM"
+  const from = normalizeMailbox(
+    pickEnv(
+      "RESEND_FROM_EMAIL",
+      "RESEND_FROM",
+      "MAIL_FROM",
+      "EMAIL_FROM",
+      "SMTP_FROM"
+    )
+  );
+  const replyTo = normalizeMailbox(
+    pickEnv("RESEND_REPLY_TO", "MAIL_REPLY_TO", "EMAIL_REPLY_TO")
   );
 
   if (!apiKey || !from) {
@@ -129,7 +191,7 @@ function getResendConfig() {
   cachedResendConfig = {
     apiKey,
     from,
-    replyTo: pickEnv("RESEND_REPLY_TO", "MAIL_REPLY_TO", "EMAIL_REPLY_TO"),
+    replyTo,
   };
 
   return cachedResendConfig;
@@ -137,27 +199,18 @@ function getResendConfig() {
 
 function getMailErrorMessage(error) {
   if (!error) {
-    return "Failed to send booking confirmation email.";
-  }
-
-  const resendMessage =
-    error?.response?.data?.message ||
-    error?.response?.data?.error?.message ||
-    error?.response?.data?.error;
-
-  if (resendMessage) {
-    return `Resend email failed: ${resendMessage}`;
+    return "Confirmation email could not be sent right now.";
   }
 
   if (error.code === "MAIL_NOT_CONFIGURED") {
-    return "Email is not configured. Set either RESEND_API_KEY with RESEND_FROM_EMAIL, or SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS.";
+    return "Confirmation email is temporarily unavailable.";
   }
 
   if (error.code === "EAUTH" || error.responseCode === 535) {
-    return "Gmail login failed. Set SMTP_USER to your Gmail address and SMTP_PASS to a valid 16-character Google App Password.";
+    return "Confirmation email service is unavailable right now.";
   }
 
-  return error.message || "Failed to send booking confirmation email.";
+  return "Confirmation email could not be sent right now.";
 }
 
 function buildMailData(booking) {
@@ -350,7 +403,7 @@ async function sendBookingApprovalEmail(booking) {
   const transporter = getTransporter();
   const smtpUser = pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER");
   const fromAddress =
-    pickEnv("MAIL_FROM", "EMAIL_FROM", "SMTP_FROM") ||
+    normalizeMailbox(pickEnv("MAIL_FROM", "EMAIL_FROM", "SMTP_FROM")) ||
     `"UTSAVAS" <${smtpUser}>`;
 
   return transporter.sendMail({
