@@ -206,6 +206,36 @@ function hasSmtpConfig() {
   return Boolean(smtpHost && smtpPort && smtpUser && smtpPass);
 }
 
+function getMailRuntimeStatus() {
+  const resendFrom = normalizeMailbox(
+    pickEnv(
+      "RESEND_FROM_EMAIL",
+      "RESEND_FROM",
+      "MAIL_FROM",
+      "EMAIL_FROM",
+      "SMTP_FROM"
+    )
+  );
+  const resendReplyTo = normalizeMailbox(
+    pickEnv("RESEND_REPLY_TO", "MAIL_REPLY_TO", "EMAIL_REPLY_TO")
+  );
+  const smtpFrom = normalizeMailbox(
+    pickEnv("MAIL_FROM", "EMAIL_FROM", "SMTP_FROM")
+  );
+
+  return {
+    hasResendApiKey: Boolean(pickEnv("RESEND_API_KEY")),
+    resendFrom: resendFrom || null,
+    resendReplyTo: resendReplyTo || null,
+    hasSmtpConfig: hasSmtpConfig(),
+    hasSmtpHost: Boolean(pickEnv("SMTP_HOST", "MAIL_HOST", "EMAIL_HOST")),
+    hasSmtpPort: Boolean(pickEnv("SMTP_PORT", "MAIL_PORT", "EMAIL_PORT")),
+    hasSmtpUser: Boolean(pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER")),
+    hasSmtpPass: Boolean(pickEnv("SMTP_PASS", "MAIL_PASS", "EMAIL_PASS")),
+    smtpFrom: smtpFrom || null,
+  };
+}
+
 function getMailErrorMessage(error) {
   if (!error) {
     return "Confirmation email could not be sent right now.";
@@ -474,6 +504,7 @@ async function sendBookingApprovalEmail(booking) {
 }
 
 module.exports = {
+  getMailRuntimeStatus,
   getMailErrorMessage,
   sendBookingApprovalEmail,
 };

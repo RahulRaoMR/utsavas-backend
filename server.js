@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -6,6 +6,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
+const { getMailRuntimeStatus } = require("./utils/bookingConfirmationEmail");
 
 const app = express();
 
@@ -137,6 +138,7 @@ mongoose
   .connect(mongoUri)
   .then(() => {
     console.log("MongoDB Connected");
+    console.log("MAIL CONFIG STATUS", getMailRuntimeStatus());
 
     const PORT = process.env.PORT || 5000;
 
