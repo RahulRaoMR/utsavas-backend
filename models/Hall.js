@@ -280,10 +280,9 @@ const hallSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-hallSchema.pre("validate", function (next) {
+hallSchema.pre("validate", function () {
   this.listingPlan = normalizeListingPlan(this.listingPlan);
   this.listingPriority = getListingPlanPriority(this.listingPlan);
-  next();
 });
 
 /* =========================

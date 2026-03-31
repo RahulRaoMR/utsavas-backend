@@ -410,6 +410,10 @@ router.post("/add", requireVendor, upload.array("images", 10), async (req, res) 
       hall,
     });
   } catch (error) {
+    if (error?.name === "ValidationError") {
+      return res.status(400).json({ message: error.message });
+    }
+
     console.error("ADD HALL ERROR", error);
     res.status(500).json({ message: "Internal server error" });
   }
@@ -658,7 +662,7 @@ router.get("/:id", async (req, res) => {
   try {
     const hall = await Hall.findById(req.params.id).populate(
       "vendor",
-      "businessName phone email"
+      "businessName ownerName phone email isOnline autoReplyEnabled"
     );
 
     if (!hall) {
@@ -879,6 +883,10 @@ router.put("/:id", requireVendor, async (req, res) => {
       hall,
     });
   } catch (error) {
+    if (error?.name === "ValidationError") {
+      return res.status(400).json({ message: error.message });
+    }
+
     console.error("UPDATE HALL ERROR", error);
     return res.status(500).json({ message: "Failed to update hall" });
   }

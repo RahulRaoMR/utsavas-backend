@@ -50,7 +50,11 @@ const paymentLimiter = rateLimit({
 });
 
 app.use(
-  helmet(),
+  helmet({
+    crossOriginResourcePolicy: {
+      policy: "cross-origin",
+    },
+  })
 );
 
 app.use(
@@ -92,6 +96,7 @@ const adminRoutes = require("./routes/adminRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const otpRoutes = require("./routes/otpRoutes");
 const authRoutes = require("./routes/authRoutes");
+const chatRoutes = require("./routes/chatRoutes");
 
 /* =========================
    API ROUTES
@@ -109,6 +114,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/halls", hallRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payment", paymentRoutes);
+app.use("/api/chat", chatRoutes);
 
 /* =========================
    HEALTH CHECK

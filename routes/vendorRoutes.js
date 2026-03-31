@@ -42,6 +42,11 @@ const serializeVendor = (vendor) => {
     city: vendor.city || "",
     serviceType: vendor.serviceType || "",
     status: vendor.status || "pending",
+    isOnline: Boolean(vendor.isOnline),
+    autoReplyEnabled:
+      typeof vendor.autoReplyEnabled === "boolean"
+        ? vendor.autoReplyEnabled
+        : true,
     createdAt: vendor.createdAt || null,
     updatedAt: vendor.updatedAt || null,
   };

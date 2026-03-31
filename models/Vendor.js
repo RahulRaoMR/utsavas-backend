@@ -68,6 +68,16 @@ const vendorSchema = new mongoose.Schema(
       enum: ["pending", "approved", "rejected"],
       default: "pending",
     },
+
+    isOnline: {
+      type: Boolean,
+      default: false,
+    },
+
+    autoReplyEnabled: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     timestamps: true,
