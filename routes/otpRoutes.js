@@ -1,7 +1,12 @@
 const express = require("express");
-const axios = require("axios");
+const {
+  normalizePhoneForStorage,
+  sendFast2SmsOtp,
+} = require("../utils/fast2sms");
 
 const router = express.Router();
+const isOtpDebugModeEnabled =
+  process.env.OTP_DEBUG_MODE?.trim().toLowerCase() === "true";
 
 // 🔥 temporary OTP store
 const otpStore = new Map();
@@ -12,8 +17,9 @@ const otpStore = new Map();
 router.post("/send-otp", async (req, res) => {
   try {
     const { phone } = req.body;
+    const cleanPhone = normalizePhoneForStorage(phone);
 
-    if (!phone) {
+    if (!cleanPhone) {
       return res.status(400).json({
         success: false,
         message: "Phone required",
@@ -22,38 +28,53 @@ router.post("/send-otp", async (req, res) => {
 
     // ✅ generate 6 digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000);
+    const otpAsString = String(otp);
+    let providerAccepted = false;
+    let fallbackReason = null;
 
-    // ✅ store OTP for 5 minutes
-    otpStore.set(phone, {
+    console.log("Generated OTP:", otp);
+    try {
+      await sendFast2SmsOtp({
+        phone: cleanPhone,
+        otp,
+      });
+      providerAccepted = true;
+    } catch (error) {
+      fallbackReason = error.message || "SMS delivery failed";
+
+      if (!isOtpDebugModeEnabled) {
+        throw error;
+      }
+
+      console.warn("SEND OTP DEBUG FALLBACK:", fallbackReason);
+    }
+
+    // ✅ store OTP for 5 minutes after provider accepts it,
+    // or in debug mode when we intentionally fall back to on-screen OTP.
+    otpStore.set(cleanPhone, {
       otp,
       expires: Date.now() + 5 * 60 * 1000,
     });
 
-    console.log("Generated OTP:", otp);
-
-    // 🚀 Fast2SMS API call
-    await axios.get("https://www.fast2sms.com/dev/bulkV2", {
-      params: {
-        authorization:
-          "5T32lKEdfGSrVqbpX8YmNiCOz4gsWkwQFj6ZLRuaDhv9B0UxM7ESiBPntd9YLKcJ7O2F5C0emabX4zgh",
-        route: "q",
-        message: `Your UTSAVAS OTP is ${otp}`,
-        language: "english",
-        flash: 0,
-        numbers: phone,
-      },
-    });
-
-    res.json({
+    return res.json({
       success: true,
-      message: "OTP sent successfully",
+      message: providerAccepted
+        ? "OTP sent successfully"
+        : "SMS delivery is pending or failed. Use the debug OTP for local testing.",
+      debugOtp: isOtpDebugModeEnabled ? otpAsString : undefined,
+      debugMode: isOtpDebugModeEnabled,
+      smsDelivery: providerAccepted ? "provider_accepted" : "debug_fallback",
+      fallbackReason,
     });
   } catch (error) {
-    console.error("SEND OTP ERROR:", error.response?.data || error.message);
+    console.error(
+      "SEND OTP ERROR:",
+      error.providerResponse || error.response?.data || error.message
+    );
 
     res.status(500).json({
       success: false,
-      message: "Failed to send OTP",
+      message: error.message || "Failed to send OTP",
     });
   }
 });
@@ -64,8 +85,9 @@ router.post("/send-otp", async (req, res) => {
 router.post("/verify-otp", (req, res) => {
   try {
     const { phone, otp } = req.body;
+    const cleanPhone = normalizePhoneForStorage(phone);
 
-    const data = otpStore.get(phone);
+    const data = otpStore.get(cleanPhone);
 
     if (!data) {
       return res.json({
@@ -75,7 +97,7 @@ router.post("/verify-otp", (req, res) => {
     }
 
     if (Date.now() > data.expires) {
-      otpStore.delete(phone);
+      otpStore.delete(cleanPhone);
       return res.json({
         success: false,
         message: "OTP expired",
@@ -89,14 +111,14 @@ router.post("/verify-otp", (req, res) => {
       });
     }
 
-    otpStore.delete(phone);
+    otpStore.delete(cleanPhone);
 
     res.json({
       success: true,
       message: "OTP verified successfully",
     });
   } catch (err) {
-    console.error(err);
+    console.error("VERIFY OTP ERROR:", err);
     res.status(500).json({
       success: false,
       message: "Verification failed",

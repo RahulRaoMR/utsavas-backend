@@ -28,25 +28,48 @@ const allowedOrigins = (
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-const authLimiter = rateLimit({
+const createJsonRateLimiter = ({ windowMs, max, message }) =>
+  rateLimit({
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler(req, res) {
+      res.status(429).json({
+        success: false,
+        message,
+      });
+    },
+  });
+
+const authLimiter = createJsonRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 50,
-  standardHeaders: true,
-  legacyHeaders: false,
+  message: "Too many login attempts. Please try again in a few minutes.",
 });
 
-const otpLimiter = rateLimit({
+const authForgotPasswordLimiter = createJsonRateLimiter({
   windowMs: 10 * 60 * 1000,
   max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
+  message: "Too many password reset OTP requests. Please wait 10 minutes and try again.",
 });
 
-const paymentLimiter = rateLimit({
+const vendorForgotPasswordLimiter = createJsonRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  message: "Too many vendor password reset attempts. Please wait 10 minutes and try again.",
+});
+
+const registerOtpLimiter = createJsonRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 12,
+  message: "Too many OTP requests. Please wait 10 minutes and try again.",
+});
+
+const paymentLimiter = createJsonRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
+  message: "Too many payment requests. Please try again shortly.",
 });
 
 app.use(
@@ -102,9 +125,10 @@ const chatRoutes = require("./routes/chatRoutes");
    API ROUTES
 ========================= */
 
-app.use("/api/auth/forgot-password", otpLimiter);
+app.use("/api/auth/forgot-password", authForgotPasswordLimiter);
+app.use("/api/vendor/forgot-password", vendorForgotPasswordLimiter);
 app.use("/api/auth", authLimiter);
-app.use("/api/otp", otpLimiter);
+app.use("/api/otp", registerOtpLimiter);
 app.use("/api/payment", paymentLimiter);
 
 app.use("/api/auth", authRoutes);

@@ -4,6 +4,7 @@ const nodemailer = require("nodemailer");
 let cachedTransporter = null;
 let cachedResendConfig = null;
 const SIMPLE_EMAIL_REGEX = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const TIME_24_HOUR_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 function pickEnv(...keys) {
   for (const key of keys) {
@@ -14,6 +15,16 @@ function pickEnv(...keys) {
   }
 
   return "";
+}
+
+function getMailProviderMode() {
+  const mode = pickEnv("MAIL_PROVIDER", "EMAIL_PROVIDER").toLowerCase();
+
+  if (["resend", "smtp", "auto"].includes(mode)) {
+    return mode;
+  }
+
+  return "auto";
 }
 
 function buildMailConfigError() {
@@ -102,6 +113,36 @@ function formatDate(value) {
     day: "numeric",
     month: "long",
     year: "numeric",
+  });
+}
+
+function formatTime(value, fallback = "Time not shared") {
+  const normalized = String(value || "").trim();
+
+  if (!TIME_24_HOUR_REGEX.test(normalized)) {
+    const fallbackTime = String(fallback || "").trim();
+
+    if (!TIME_24_HOUR_REGEX.test(fallbackTime)) {
+      return fallback;
+    }
+
+    const [fallbackHours, fallbackMinutes] = fallbackTime.split(":").map(Number);
+    const fallbackDate = new Date();
+    fallbackDate.setHours(fallbackHours, fallbackMinutes, 0, 0);
+
+    return fallbackDate.toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  const [hours, minutes] = normalized.split(":").map(Number);
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+
+  return date.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -224,6 +265,7 @@ function getMailRuntimeStatus() {
   );
 
   return {
+    mailProvider: getMailProviderMode(),
     hasResendApiKey: Boolean(pickEnv("RESEND_API_KEY")),
     resendFrom: resendFrom || null,
     resendReplyTo: resendReplyTo || null,
@@ -236,20 +278,218 @@ function getMailRuntimeStatus() {
   };
 }
 
+function getProviderStatus(error) {
+  return (
+    error?.response?.status ||
+    error?.status ||
+    error?.resendError?.response?.status ||
+    error?.resendError?.status ||
+    null
+  );
+}
+
+function getProviderResponseData(error) {
+  return (
+    error?.response?.data ||
+    error?.resendError?.response?.data ||
+    error?.providerResponse ||
+    null
+  );
+}
+
+function getProviderResponseMessage(error) {
+  const data = getProviderResponseData(error);
+
+  if (typeof data === "string" && data.trim()) {
+    return data.trim();
+  }
+
+  if (typeof data?.message === "string" && data.message.trim()) {
+    return data.message.trim();
+  }
+
+  if (typeof data?.error?.message === "string" && data.error.message.trim()) {
+    return data.error.message.trim();
+  }
+
+  return "";
+}
+
 function getMailErrorMessage(error) {
   if (!error) {
     return "Confirmation email could not be sent right now.";
   }
 
+  const providerStatus = getProviderStatus(error);
+  const providerMessage = getProviderResponseMessage(error);
+  const resendFrom = normalizeMailbox(
+    pickEnv(
+      "RESEND_FROM_EMAIL",
+      "RESEND_FROM",
+      "MAIL_FROM",
+      "EMAIL_FROM",
+      "SMTP_FROM"
+    )
+  );
+
   if (error.code === "MAIL_NOT_CONFIGURED") {
-    return "Confirmation email is temporarily unavailable.";
+    return "Email service is not configured yet.";
   }
 
   if (error.code === "EAUTH" || error.responseCode === 535) {
-    return "Confirmation email service is unavailable right now.";
+    return "Email login failed. Update SMTP_PASS with a valid Gmail App Password.";
   }
 
-  return "Confirmation email could not be sent right now.";
+  if (
+    String(error?.message || "").includes("Google App Password") ||
+    String(error?.smtpError?.message || "").includes("Google App Password")
+  ) {
+    return "Email login failed. Update SMTP_PASS with a valid Gmail App Password.";
+  }
+
+  if (
+    providerStatus === 401
+  ) {
+    return "Email provider rejected the request. Check your RESEND_API_KEY and sender configuration.";
+  }
+
+  if (
+    providerStatus === 403 &&
+    (String(resendFrom).includes("resend.dev") ||
+      providerMessage.toLowerCase().includes("resend.dev") ||
+      providerMessage.toLowerCase().includes("verify a domain"))
+  ) {
+    return "Resend test sender onboarding@resend.dev only sends to your own Resend account email. Verify your domain in Resend and set RESEND_FROM_EMAIL to that domain.";
+  }
+
+  if (providerStatus === 403 && providerMessage) {
+    return providerMessage;
+  }
+
+  if (providerStatus === 422 && providerMessage) {
+    return providerMessage;
+  }
+
+  if (
+    ["EACCES", "ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT"].includes(
+      String(error?.code || "")
+    ) ||
+    ["EACCES", "ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT"].includes(
+      String(error?.resendError?.code || "")
+    )
+  ) {
+    return "Email service could not reach the provider. Check your internet connection and provider settings.";
+  }
+
+  if (providerMessage) {
+    return providerMessage;
+  }
+
+  return "Email could not be sent right now.";
+}
+
+async function sendTransactionalEmail({
+  to,
+  subject,
+  html,
+  text,
+  tags = [],
+  attachments = [],
+}) {
+  const recipient = normalizeMailbox(to);
+  const providerMode = getMailProviderMode();
+
+  if (!recipient) {
+    throw new Error("A valid recipient email is required.");
+  }
+
+  const resendConfig = getResendConfig();
+  let resendError = null;
+
+  if (providerMode !== "smtp" && resendConfig) {
+    try {
+      const payload = {
+        from: resendConfig.from,
+        to: [recipient],
+        subject,
+        html,
+        text,
+      };
+
+      if (attachments.length > 0) {
+        payload.attachments = attachments;
+      }
+
+      if (Array.isArray(tags) && tags.length > 0) {
+        payload.tags = tags;
+      }
+
+      if (resendConfig.replyTo) {
+        payload.reply_to = resendConfig.replyTo;
+      }
+
+      const response = await axios.post("https://api.resend.com/emails", payload, {
+        headers: {
+          Authorization: `Bearer ${resendConfig.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 20000,
+      });
+
+      return response.data;
+    } catch (error) {
+      resendError = error;
+      console.error("RESEND EMAIL ERROR", error?.response?.data || error);
+    }
+  }
+
+  if (providerMode === "resend") {
+    if (resendError) {
+      throw resendError;
+    }
+
+    throw buildMailConfigError();
+  }
+
+  if (hasSmtpConfig()) {
+    try {
+      const transporter = getTransporter();
+      const smtpUser = pickEnv("SMTP_USER", "MAIL_USER", "EMAIL_USER");
+      const fromAddress =
+        normalizeMailbox(pickEnv("MAIL_FROM", "EMAIL_FROM", "SMTP_FROM")) ||
+        `"UTSAVAS" <${smtpUser}>`;
+
+      return await transporter.sendMail({
+        from: fromAddress,
+        to: recipient,
+        subject,
+        html,
+        text,
+        attachments,
+      });
+    } catch (error) {
+      console.error("SMTP EMAIL ERROR", error);
+
+      if (resendError) {
+        const combinedError = new Error(
+          `Resend failed and SMTP failed: ${error.message || "Unknown SMTP error"}`
+        );
+        combinedError.code = error.code || resendError.code;
+        combinedError.responseCode = error.responseCode || resendError.responseCode;
+        combinedError.resendError = resendError;
+        combinedError.smtpError = error;
+        throw combinedError;
+      }
+
+      throw error;
+    }
+  }
+
+  if (resendError) {
+    throw resendError;
+  }
+
+  throw buildMailConfigError();
 }
 
 function buildMailData(booking) {
@@ -279,7 +519,9 @@ function buildMailData(booking) {
     eventType: booking.eventType || "Event",
     guests: booking.guests || 0,
     checkIn: formatDate(booking.checkIn),
+    checkInTime: formatTime(booking.checkInTime, "09:00"),
     checkOut: formatDate(booking.checkOut),
+    checkOutTime: formatTime(booking.checkOutTime, "21:00"),
     days,
     paymentMethod:
       booking.paymentMethod === "online" ? "Paid online" : "Pay at venue",
@@ -314,10 +556,12 @@ function buildHtml(data) {
             <div style="background:#ffffff; border:1px solid #dfe8f6; border-radius:18px; padding:18px;">
               <div style="font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:#7c6a52; margin-bottom:8px;">Check-in</div>
               <div style="font-size:20px; color:#183b63; font-weight:700;">${data.checkIn}</div>
+              <div style="font-size:14px; color:#5e5551; margin-top:6px;">${data.checkInTime}</div>
             </div>
             <div style="background:#ffffff; border:1px solid #dfe8f6; border-radius:18px; padding:18px;">
               <div style="font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:#7c6a52; margin-bottom:8px;">Check-out</div>
               <div style="font-size:20px; color:#183b63; font-weight:700;">${data.checkOut}</div>
+              <div style="font-size:14px; color:#5e5551; margin-top:6px;">${data.checkOutTime}</div>
             </div>
           </div>
 
@@ -371,7 +615,9 @@ function buildText(data) {
     `Venue: ${data.hallName}`,
     `Location: ${data.venueAddress}`,
     `Check-in: ${data.checkIn}`,
+    `Check-in time: ${data.checkInTime}`,
     `Check-out: ${data.checkOut}`,
+    `Check-out time: ${data.checkOutTime}`,
     `Event: ${data.eventType}`,
     `Guests: ${data.guests}`,
     `Duration: ${data.days} day${data.days > 1 ? "s" : ""}`,
@@ -464,15 +710,24 @@ async function sendBookingApprovalEmail(booking) {
   const html = buildHtml(mailData);
   const text = buildText(mailData);
   const resendConfig = getResendConfig();
+  const providerMode = getMailProviderMode();
   let resendError = null;
 
-  if (resendConfig) {
+  if (providerMode !== "smtp" && resendConfig) {
     try {
       return await sendViaResend(mailData, html, text, resendConfig);
     } catch (error) {
       resendError = error;
       console.error("RESEND BOOKING EMAIL ERROR", error?.response?.data || error);
     }
+  }
+
+  if (providerMode === "resend") {
+    if (resendError) {
+      throw resendError;
+    }
+
+    throw buildMailConfigError();
   }
 
   if (hasSmtpConfig()) {
@@ -506,5 +761,6 @@ async function sendBookingApprovalEmail(booking) {
 module.exports = {
   getMailRuntimeStatus,
   getMailErrorMessage,
+  sendTransactionalEmail,
   sendBookingApprovalEmail,
 };

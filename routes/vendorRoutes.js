@@ -1,15 +1,21 @@
 const express = require("express");
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 const Vendor = require("../models/Vendor");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
 const generateToken = require("../utils/generateToken");
 const authMiddleware = require("../middleware/authMiddleware");
+const { sendVendorPasswordResetOtpEmail } = require("../utils/vendorPasswordResetEmail");
+const { getMailErrorMessage } = require("../utils/bookingConfirmationEmail");
 
 const { requireAdmin } = authMiddleware;
 const router = express.Router();
+const vendorResetOtpStore = new Map();
+const VENDOR_RESET_OTP_TTL_MS = 5 * 60 * 1000;
 
 const VALID_VENDOR_SERVICE_TYPES = [
+  "banquet",
   "premium-venues",
   "resorts",
   "banquet-halls",
@@ -51,6 +57,11 @@ const serializeVendor = (vendor) => {
     updatedAt: vendor.updatedAt || null,
   };
 };
+
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+
+const generateOtp = () =>
+  String(Math.floor(100000 + Math.random() * 900000));
 
 /* =========================
    TEST ROUTE
@@ -217,6 +228,186 @@ router.post("/login", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Internal server error",
+    });
+  }
+});
+
+/* =========================
+   VENDOR FORGOT PASSWORD
+========================= */
+router.post("/forgot-password/send-otp", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Registered email is required",
+      });
+    }
+
+    const vendor = await Vendor.findOne({ email });
+
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: "Vendor account not found for this email",
+      });
+    }
+
+    const otp = generateOtp();
+
+    await sendVendorPasswordResetOtpEmail({
+      to: vendor.email,
+      ownerName: vendor.ownerName,
+      businessName: vendor.businessName,
+      otp,
+    });
+
+    vendorResetOtpStore.set(email, {
+      otp,
+      expires: Date.now() + VENDOR_RESET_OTP_TTL_MS,
+      verified: false,
+    });
+
+    return res.json({
+      success: true,
+      message: "OTP sent to your registered email",
+    });
+  } catch (error) {
+    console.error("VENDOR SEND RESET OTP ERROR", error?.response?.data || error);
+
+    return res.status(500).json({
+      success: false,
+      message: getMailErrorMessage(error),
+    });
+  }
+});
+
+router.post("/forgot-password/verify-otp", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const otp = String(req.body?.otp || "").trim();
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and OTP are required",
+      });
+    }
+
+    const data = vendorResetOtpStore.get(email);
+
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: "OTP not found. Request a new OTP.",
+      });
+    }
+
+    if (Date.now() > data.expires) {
+      vendorResetOtpStore.delete(email);
+      return res.status(400).json({
+        success: false,
+        message: "OTP expired. Request a new OTP.",
+      });
+    }
+
+    if (otp !== data.otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP",
+      });
+    }
+
+    vendorResetOtpStore.set(email, {
+      ...data,
+      verified: true,
+    });
+
+    return res.json({
+      success: true,
+      message: "OTP verified successfully",
+    });
+  } catch (error) {
+    console.error("VENDOR VERIFY RESET OTP ERROR", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "OTP verification failed",
+    });
+  }
+});
+
+router.post("/forgot-password/reset", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const newPassword = String(req.body?.newPassword || "").trim();
+
+    if (!email || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and new password are required",
+      });
+    }
+
+    const resetData = vendorResetOtpStore.get(email);
+
+    if (!resetData) {
+      return res.status(400).json({
+        success: false,
+        message: "Request and verify OTP before resetting password",
+      });
+    }
+
+    if (Date.now() > resetData.expires) {
+      vendorResetOtpStore.delete(email);
+      return res.status(400).json({
+        success: false,
+        message: "OTP expired. Request a new OTP.",
+      });
+    }
+
+    if (!resetData.verified) {
+      return res.status(400).json({
+        success: false,
+        message: "Verify OTP before resetting password",
+      });
+    }
+
+    const vendor = await Vendor.findOne({ email });
+
+    if (!vendor) {
+      vendorResetOtpStore.delete(email);
+      return res.status(404).json({
+        success: false,
+        message: "Vendor account not found",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await Vendor.updateOne(
+      { _id: vendor._id },
+      {
+        $set: {
+          password: hashedPassword,
+        },
+      }
+    );
+
+    vendorResetOtpStore.delete(email);
+
+    return res.json({
+      success: true,
+      message: "Password updated successfully",
+    });
+  } catch (error) {
+    console.error("VENDOR RESET PASSWORD ERROR", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Password reset failed",
     });
   }
 });

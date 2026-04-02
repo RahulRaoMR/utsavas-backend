@@ -1,9 +1,12 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const axios = require("axios");
 const User = require("../models/User");
 const generateToken = require("../utils/generateToken");
 const authMiddleware = require("../middleware/authMiddleware");
+const {
+  normalizePhoneForStorage,
+  sendFast2SmsOtp,
+} = require("../utils/fast2sms");
 
 const router = express.Router();
 
@@ -16,15 +19,7 @@ const resetOtpStore = new Map();
    HELPERS
 ========================= */
 const normalizePhone = (phone) => {
-  if (!phone) return phone;
-
-  let value = phone.toString().replace(/\D/g, "");
-
-  if (value.length === 10) {
-    value = `91${value}`;
-  }
-
-  return value;
+  return normalizePhoneForStorage(phone);
 };
 
 const serializeUser = (user) => {
@@ -228,20 +223,14 @@ router.post("/forgot-password/send-otp", async (req, res) => {
 
     const otp = Math.floor(100000 + Math.random() * 900000);
 
+    await sendFast2SmsOtp({
+      phone: cleanPhone,
+      otp,
+    });
+
     resetOtpStore.set(cleanPhone, {
       otp,
       expires: Date.now() + 5 * 60 * 1000,
-    });
-
-    await axios.get("https://www.fast2sms.com/dev/bulkV2", {
-      params: {
-        authorization: process.env.FAST2SMS_API_KEY,
-        route: "q",
-        message: `Your UTSAVAS password reset OTP is ${otp}`,
-        language: "english",
-        flash: 0,
-        numbers: cleanPhone,
-      },
     });
 
     res.json({
@@ -249,11 +238,14 @@ router.post("/forgot-password/send-otp", async (req, res) => {
       message: "OTP sent",
     });
   } catch (error) {
-    console.error("RESET OTP ERROR:", error.response?.data || error.message);
+    console.error(
+      "RESET OTP ERROR:",
+      error.providerResponse || error.response?.data || error.message
+    );
 
     res.status(500).json({
       success: false,
-      message: "OTP send failed",
+      message: error.message || "OTP send failed",
     });
   }
 });

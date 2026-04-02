@@ -40,6 +40,7 @@ const vendorSchema = new mongoose.Schema(
       type: String,
       required: true,
       enum: [
+        "banquet",
         "premium-venues",
         "resorts",
         "banquet-halls",
