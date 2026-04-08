@@ -513,7 +513,7 @@ function buildMailData(booking) {
     venueAddress: venueAddress || "Venue address will be shared by the venue partner.",
     vendorName: vendor.businessName || "UTSAVAS Venue Partner",
     vendorPhone: vendor.phone || "Available from your venue partner after confirmation",
-    vendorEmail: vendor.email || "support@utsavas.com",
+    vendorEmail: vendor.email || "utsavas@talme.in",
     customerName: booking.customerName || "Guest",
     customerEmail: booking.customerEmail,
     eventType: booking.eventType || "Event",
