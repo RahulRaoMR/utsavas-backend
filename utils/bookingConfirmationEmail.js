@@ -1,5 +1,11 @@
 const axios = require("axios");
 const nodemailer = require("nodemailer");
+const {
+  BOOKING_GST_HSN_CODE,
+  BOOKING_GST_RATE,
+  calculateBookingInvoiceBreakdown,
+  getBookingGstRate,
+} = require("./bookingPricing");
 
 let cachedTransporter = null;
 let cachedResendConfig = null;
@@ -95,8 +101,8 @@ function formatCurrency(amount) {
   return `Rs ${Number(amount || 0).toLocaleString("en-IN")}`;
 }
 
-function formatChargeLabel(rate) {
-  return `GST (${Math.round(rate * 100)}%)`;
+function formatChargeLabel(rate, hsnCode = BOOKING_GST_HSN_CODE) {
+  return `GST (${Math.round(getBookingGstRate(rate) * 100)}%) - HSN/SAC ${hsnCode}`;
 }
 
 function formatDate(value) {
@@ -133,6 +139,7 @@ function formatTime(value, fallback = "Time not shared") {
     return fallbackDate.toLocaleTimeString("en-IN", {
       hour: "2-digit",
       minute: "2-digit",
+      hour12: true,
     });
   }
 
@@ -143,6 +150,7 @@ function formatTime(value, fallback = "Time not shared") {
   return date.toLocaleTimeString("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
+    hour12: true,
   });
 }
 
@@ -496,14 +504,22 @@ function buildMailData(booking) {
   const hall = booking.hall || {};
   const vendor = booking.vendor || {};
   const bookingUrl = process.env.PUBLIC_WEB_URL || "https://www.utsavas.com";
-  const gstRate = 0.02;
   const hallName = hall.hallName || "Your venue";
   const venueAddress = buildAddress(hall.address || {});
-  const totalAmount = Number(booking.amount) || 0;
-  const venueAmount = Number(booking.venueAmount) || totalAmount;
-  const gstAmount = Number(booking.supportFee) || 0;
-  const subtotalAmount = Number(booking.subtotalAmount) || venueAmount + gstAmount;
-  const discountAmount = Number(booking.discountAmount) || 0;
+  const resolvedGstRate = getBookingGstRate(booking.gstRate, BOOKING_GST_RATE);
+  const invoiceBreakdown = calculateBookingInvoiceBreakdown({
+    venueAmount: booking.venueAmount,
+    discountAmount: booking.discountAmount,
+    gstRate: resolvedGstRate,
+  });
+  const venueAmount = Number(booking.venueAmount) || invoiceBreakdown.venueAmount;
+  const discountAmount = Number(booking.discountAmount) || invoiceBreakdown.discountAmount;
+  const taxableAmount = Number(booking.taxableAmount) || invoiceBreakdown.taxableAmount;
+  const gstAmount = Number(booking.supportFee) || invoiceBreakdown.gstAmount;
+  const totalAmount = Number(booking.amount) || taxableAmount + gstAmount;
+  const gstHsnCode =
+    String(booking.gstHsnCode || BOOKING_GST_HSN_CODE).trim() ||
+    BOOKING_GST_HSN_CODE;
   const days = calculateDays(booking.checkIn, booking.checkOut);
 
   return {
@@ -526,14 +542,15 @@ function buildMailData(booking) {
     paymentMethod:
       booking.paymentMethod === "online" ? "Paid online" : "Pay at venue",
     paymentStatus: booking.paymentStatus || "pending",
-    gstLabel: formatChargeLabel(gstRate),
+    gstLabel: formatChargeLabel(resolvedGstRate, gstHsnCode),
     pricingBasis: booking.pricingBasis || "Venue pricing",
     venueAmount: formatCurrency(venueAmount),
+    taxableAmount: formatCurrency(taxableAmount),
     gstAmount: formatCurrency(gstAmount),
-    subtotalAmount: formatCurrency(subtotalAmount),
     discountAmount: formatCurrency(discountAmount),
     totalAmount: formatCurrency(totalAmount),
     couponCode: booking.couponCode || "No coupon applied",
+    gstHsnCode,
   };
 }
 
@@ -585,11 +602,11 @@ function buildHtml(data) {
             <h2 style="margin:0 0 16px; color:#183b63; font-size:24px;">Invoice summary</h2>
             <table style="width:100%; border-collapse:collapse; font-size:16px; line-height:1.8;">
               <tr><td style="padding:8px 0; color:#5e5551;">Venue amount</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.venueAmount}</td></tr>
+              <tr><td style="padding:8px 0; color:#5e5551;">Coupon code</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.couponCode}</td></tr>
+              <tr><td style="padding:8px 0; color:#2f855a;">Coupon discount</td><td style="padding:8px 0; color:#2f855a; font-weight:700; text-align:right;">- ${data.discountAmount}</td></tr>
+              <tr><td style="padding:8px 0; color:#5e5551;">Taxable value</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.taxableAmount}</td></tr>
               <tr><td style="padding:8px 0; color:#5e5551;">${data.gstLabel}</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.gstAmount}</td></tr>
-              <tr><td style="padding:8px 0; color:#5e5551;">Subtotal</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.subtotalAmount}</td></tr>
-              <tr><td style="padding:8px 0; color:#5e5551;">Coupon</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.couponCode}</td></tr>
-              <tr><td style="padding:8px 0; color:#2f855a;">Discount</td><td style="padding:8px 0; color:#2f855a; font-weight:700; text-align:right;">- ${data.discountAmount}</td></tr>
-              <tr><td style="padding:12px 0 0; color:#183b63; font-size:20px; font-weight:700;">Total</td><td style="padding:12px 0 0; color:#183b63; font-size:20px; font-weight:700; text-align:right;">${data.totalAmount}</td></tr>
+              <tr><td style="padding:12px 0 0; color:#183b63; font-size:20px; font-weight:700;">Total bill</td><td style="padding:12px 0 0; color:#183b63; font-size:20px; font-weight:700; text-align:right;">${data.totalAmount}</td></tr>
             </table>
           </div>
 
@@ -626,11 +643,11 @@ function buildText(data) {
     ``,
     `Invoice summary`,
     `Venue amount: ${data.venueAmount}`,
+    `Coupon code: ${data.couponCode}`,
+    `Coupon discount: - ${data.discountAmount}`,
+    `Taxable value: ${data.taxableAmount}`,
     `${data.gstLabel}: ${data.gstAmount}`,
-    `Subtotal: ${data.subtotalAmount}`,
-    `Coupon: ${data.couponCode}`,
-    `Discount: - ${data.discountAmount}`,
-    `Total: ${data.totalAmount}`,
+    `Total bill: ${data.totalAmount}`,
     ``,
     `Venue partner: ${data.vendorName}`,
     `Phone: ${data.vendorPhone}`,

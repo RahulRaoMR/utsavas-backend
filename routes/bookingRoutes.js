@@ -9,12 +9,109 @@ const {
   getMailErrorMessage,
   sendBookingApprovalEmail,
 } = require("../utils/bookingConfirmationEmail");
+const {
+  BOOKING_GST_HSN_CODE,
+  BOOKING_GST_RATE,
+  calculateBookingInvoiceBreakdown,
+} = require("../utils/bookingPricing");
 
 const { requireAdmin, requireVendor } = authMiddleware;
 const router = express.Router();
 
 console.log("🔥 BOOKING ROUTES LOADED");
-const GST_RATE = 0.02;
+const TIME_24_HOUR_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const DATE_INPUT_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const DEFAULT_CHECK_IN_TIME = "09:00";
+const DEFAULT_CHECK_OUT_TIME = "21:00";
+
+const normalizeTimeValue = (value) => {
+  const normalized = String(value || "").trim();
+  return TIME_24_HOUR_REGEX.test(normalized) ? normalized : "";
+};
+
+const resolveCheckInTime = (value) =>
+  normalizeTimeValue(value) || DEFAULT_CHECK_IN_TIME;
+
+const resolveCheckOutTime = (value) =>
+  normalizeTimeValue(value) || DEFAULT_CHECK_OUT_TIME;
+
+const extractDateParts = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const normalizedValue = String(value).trim();
+
+  if (DATE_INPUT_REGEX.test(normalizedValue)) {
+    const [year, month, day] = normalizedValue.split("-").map(Number);
+
+    return {
+      year,
+      monthIndex: month - 1,
+      day,
+    };
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return {
+    year: date.getUTCFullYear(),
+    monthIndex: date.getUTCMonth(),
+    day: date.getUTCDate(),
+  };
+};
+
+const buildExactDateTime = (dateValue, timeValue, fallbackTime = "") => {
+  const dateParts = extractDateParts(dateValue);
+  const normalizedTime =
+    normalizeTimeValue(timeValue) || normalizeTimeValue(fallbackTime);
+
+  if (!dateParts || !normalizedTime) {
+    return null;
+  }
+
+  const [hours, minutes] = normalizedTime.split(":").map(Number);
+
+  return new Date(
+    Date.UTC(dateParts.year, dateParts.monthIndex, dateParts.day, hours, minutes, 0, 0)
+  );
+};
+
+const buildDayBoundary = (dateValue, endOfDay = false) => {
+  const dateParts = extractDateParts(dateValue);
+
+  if (!dateParts) {
+    return null;
+  }
+
+  return new Date(
+    Date.UTC(
+      dateParts.year,
+      dateParts.monthIndex,
+      dateParts.day,
+      endOfDay ? 23 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 999 : 0
+    )
+  );
+};
+
+const exactRangesOverlap = (startA, endA, startB, endB) =>
+  startA instanceof Date &&
+  endA instanceof Date &&
+  startB instanceof Date &&
+  endB instanceof Date &&
+  !Number.isNaN(startA.getTime()) &&
+  !Number.isNaN(endA.getTime()) &&
+  !Number.isNaN(startB.getTime()) &&
+  !Number.isNaN(endB.getTime()) &&
+  startA < endB &&
+  endA > startB;
 
 const normalizePhone = (phone) => {
   if (!phone) return "";
@@ -112,7 +209,9 @@ const serializeBooking = (booking) => {
     guests: booking?.guests || 0,
     status: booking?.status || "pending",
     checkIn: booking?.checkIn || null,
+    checkInTime: resolveCheckInTime(booking?.checkInTime),
     checkOut: booking?.checkOut || null,
+    checkOutTime: resolveCheckOutTime(booking?.checkOutTime),
     createdAt: booking?.createdAt || null,
     updatedAt: booking?.updatedAt || null,
     hallId: hall?._id || booking?.hall || null,
@@ -132,10 +231,13 @@ const serializeBooking = (booking) => {
     amount: Number(booking?.amount) || 0,
     venueAmount: Number(booking?.venueAmount) || 0,
     supportFee: Number(booking?.supportFee) || 0,
+    taxableAmount: Number(booking?.taxableAmount) || 0,
     subtotalAmount: Number(booking?.subtotalAmount) || 0,
     discountAmount: Number(booking?.discountAmount) || 0,
     couponCode: booking?.couponCode || "",
     pricingBasis: booking?.pricingBasis || "",
+    gstRate: Number(booking?.gstRate) || BOOKING_GST_RATE,
+    gstHsnCode: booking?.gstHsnCode || BOOKING_GST_HSN_CODE,
   };
 };
 
@@ -155,7 +257,9 @@ const serializeOfflineBooking = (hall, offlineBooking) => ({
   guests: 0,
   status: "offline",
   checkIn: offlineBooking?.startDate || null,
+  checkInTime: "",
   checkOut: offlineBooking?.endDate || null,
+  checkOutTime: "",
   createdAt: offlineBooking?.createdAt || null,
   updatedAt: offlineBooking?.updatedAt || null,
   hall: hall
@@ -178,7 +282,9 @@ router.post("/create", authMiddleware, async (req, res) => {
     const {
       hallId,
       checkIn,
+      checkInTime,
       checkOut,
+      checkOutTime,
       eventType,
       guests,
       customerName,
@@ -193,13 +299,33 @@ router.post("/create", authMiddleware, async (req, res) => {
     if (
       !hallId ||
       !checkIn ||
+      !checkInTime ||
       !checkOut ||
+      !checkOutTime ||
       !eventType ||
       !customerName ||
       !phone
     ) {
       return res.status(400).json({
         message: "All required fields must be filled",
+      });
+    }
+
+    const normalizedCheckInTime = normalizeTimeValue(checkInTime);
+    const normalizedCheckOutTime = normalizeTimeValue(checkOutTime);
+
+    if (!normalizedCheckInTime || !normalizedCheckOutTime) {
+      return res.status(400).json({
+        message: "Please select valid check-in and check-out times",
+      });
+    }
+
+    if (
+      String(checkIn) === String(checkOut) &&
+      normalizedCheckOutTime <= normalizedCheckInTime
+    ) {
+      return res.status(400).json({
+        message: "Check-out time must be later than check-in time for same-day bookings",
       });
     }
 
@@ -211,18 +337,81 @@ router.post("/create", authMiddleware, async (req, res) => {
       });
     }
 
+    const requestedStart = buildExactDateTime(checkIn, normalizedCheckInTime);
+    const requestedEnd = buildExactDateTime(checkOut, normalizedCheckOutTime);
+    const requestedStartDay = buildDayBoundary(checkIn);
+    const requestedEndDay = buildDayBoundary(checkOut, true);
+
+    if (
+      !requestedStart ||
+      !requestedEnd ||
+      !requestedStartDay ||
+      !requestedEndDay ||
+      requestedEnd <= requestedStart
+    ) {
+      return res.status(400).json({
+        message: "Please choose a valid booking date and time range",
+      });
+    }
+
+    const approvedCandidates = await Booking.find({
+      hall: hallId,
+      status: "approved",
+      checkIn: { $lte: requestedEndDay },
+      checkOut: { $gte: requestedStartDay },
+    }).select("checkIn checkInTime checkOut checkOutTime");
+
+    const overlappingApprovedBooking = approvedCandidates.find((existingBooking) => {
+      const existingStart = buildExactDateTime(
+        existingBooking.checkIn,
+        existingBooking.checkInTime,
+        DEFAULT_CHECK_IN_TIME
+      );
+      const existingEnd = buildExactDateTime(
+        existingBooking.checkOut,
+        existingBooking.checkOutTime,
+        DEFAULT_CHECK_OUT_TIME
+      );
+
+      return (
+        existingStart &&
+        existingEnd &&
+        exactRangesOverlap(requestedStart, requestedEnd, existingStart, existingEnd)
+      );
+    });
+
+    if (overlappingApprovedBooking) {
+      return res.status(409).json({
+        message: "This date and time slot is already booked",
+      });
+    }
+
+    const overlappingOfflineBooking = (hall.offlineBookings || []).find((block) => {
+      const blockedStart = buildDayBoundary(block.startDate);
+      const blockedEnd = buildDayBoundary(block.endDate, true);
+
+      return (
+        blockedStart &&
+        blockedEnd &&
+        exactRangesOverlap(requestedStart, requestedEnd, blockedStart, blockedEnd)
+      );
+    });
+
+    if (overlappingOfflineBooking) {
+      return res.status(409).json({
+        message: "This venue is blocked offline for the selected schedule",
+      });
+    }
+
     const matchedUser = await findUserFromRequest(req, phone, customerEmail);
     const resolvedEmail =
       normalizeEmail(customerEmail) || normalizeEmail(matchedUser?.email);
     const normalizedVenueAmount = Math.max(Number(venueAmount) || 0, 0);
-    const normalizedSupportFee =
-      normalizedVenueAmount > 0 ? Math.round(normalizedVenueAmount * GST_RATE) : 0;
-    const normalizedSubtotalAmount = normalizedVenueAmount + normalizedSupportFee;
-    const normalizedDiscountAmount = Math.max(Number(discountAmount) || 0, 0);
-    const normalizedAmount = Math.max(
-      normalizedSubtotalAmount - normalizedDiscountAmount,
-      0
-    );
+    const invoiceBreakdown = calculateBookingInvoiceBreakdown({
+      venueAmount: normalizedVenueAmount,
+      discountAmount,
+      gstRate: BOOKING_GST_RATE,
+    });
     const customerId =
       matchedUser?._id ||
       (mongoose.Types.ObjectId.isValid(req.user?.id) ? req.user.id : null);
@@ -232,20 +421,25 @@ router.post("/create", authMiddleware, async (req, res) => {
       hall: hallId,
       vendor: hall.vendor,
       checkIn: new Date(checkIn),
+      checkInTime: normalizedCheckInTime,
       checkOut: new Date(checkOut),
+      checkOutTime: normalizedCheckOutTime,
       eventType,
       guests,
       customerName,
       phone: normalizePhone(phone) || phone,
       customerEmail: resolvedEmail,
       status: "pending",
-      amount: normalizedAmount,
-      venueAmount: normalizedVenueAmount,
-      supportFee: normalizedSupportFee,
-      subtotalAmount: normalizedSubtotalAmount,
-      discountAmount: normalizedDiscountAmount,
+      amount: invoiceBreakdown.totalAmount,
+      venueAmount: invoiceBreakdown.venueAmount,
+      supportFee: invoiceBreakdown.gstAmount,
+      taxableAmount: invoiceBreakdown.taxableAmount,
+      subtotalAmount: invoiceBreakdown.taxableAmount,
+      discountAmount: invoiceBreakdown.discountAmount,
       couponCode: couponCode ? String(couponCode).trim().toUpperCase() : "",
       pricingBasis: pricingBasis ? String(pricingBasis).trim() : "",
+      gstRate: invoiceBreakdown.gstRate,
+      gstHsnCode: invoiceBreakdown.gstHsnCode,
     });
 
     await booking.save();
@@ -533,7 +727,10 @@ router.get("/vendor/:vendorId", requireVendor, async (req, res) => {
       )
     );
 
-    const combinedBookings = [...bookings, ...offlineBookings].sort((left, right) => {
+    const combinedBookings = [
+      ...bookings.map(serializeBooking),
+      ...offlineBookings,
+    ].sort((left, right) => {
       const leftDate = new Date(left.checkIn || left.createdAt || 0).getTime();
       const rightDate = new Date(right.checkIn || right.createdAt || 0).getTime();
       return rightDate - leftDate;
@@ -557,7 +754,7 @@ router.get("/hall/:hallId", async (req, res) => {
     const { hallId } = req.params;
 
     const bookings = await Booking.find({ hall: hallId }).select(
-      "checkIn checkOut status"
+      "checkIn checkInTime checkOut checkOutTime status"
     );
 
     const hall = await Hall.findById(hallId).select(
@@ -596,7 +793,9 @@ router.get("/admin/bookings", requireAdmin, async (req, res) => {
       guests: booking.guests,
       status: booking.status,
       checkIn: booking.checkIn,
+      checkInTime: resolveCheckInTime(booking.checkInTime),
       checkOut: booking.checkOut,
+      checkOutTime: resolveCheckOutTime(booking.checkOutTime),
       hallName: booking.hall?.hallName || "N/A",
       vendorName: booking.vendor?.businessName || "N/A",
       paymentMethod: booking.paymentMethod,
@@ -604,9 +803,12 @@ router.get("/admin/bookings", requireAdmin, async (req, res) => {
       amount: booking.amount || 0,
       venueAmount: booking.venueAmount || 0,
       supportFee: booking.supportFee || 0,
+      taxableAmount: booking.taxableAmount || 0,
       subtotalAmount: booking.subtotalAmount || 0,
       discountAmount: booking.discountAmount || 0,
       couponCode: booking.couponCode || "",
+      gstRate: booking.gstRate || BOOKING_GST_RATE,
+      gstHsnCode: booking.gstHsnCode || BOOKING_GST_HSN_CODE,
     }));
 
     res.json(formatted);

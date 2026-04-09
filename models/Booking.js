@@ -32,11 +32,23 @@ const bookingSchema = new mongoose.Schema(
       index: true,
     },
 
+    checkInTime: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
     // ✅ Check-out date
     checkOut: {
       type: Date,
       required: true,
       index: true,
+    },
+
+    checkOutTime: {
+      type: String,
+      trim: true,
+      default: "",
     },
 
     eventType: {
@@ -109,6 +121,11 @@ const bookingSchema = new mongoose.Schema(
       default: 0,
     },
 
+    taxableAmount: {
+      type: Number,
+      default: 0,
+    },
+
     subtotalAmount: {
       type: Number,
       default: 0,
@@ -130,6 +147,17 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: "",
+    },
+
+    gstRate: {
+      type: Number,
+      default: 0.18,
+    },
+
+    gstHsnCode: {
+      type: String,
+      trim: true,
+      default: "998599",
     },
 
     razorpayOrderId: {
