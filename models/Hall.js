@@ -72,6 +72,47 @@ const analyticsDailySchema = new mongoose.Schema(
   }
 );
 
+const hallReviewSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    reviewerName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    reviewerEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+    },
+    rating: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 5,
+    },
+    comment: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 1200,
+    },
+    photos: {
+      type: [String],
+      default: [],
+    },
+  },
+  {
+    _id: true,
+    timestamps: true,
+  }
+);
+
 const hallSchema = new mongoose.Schema(
   {
     /* =========================
@@ -274,6 +315,11 @@ const hallSchema = new mongoose.Schema(
 
     analyticsDaily: {
       type: [analyticsDailySchema],
+      default: [],
+    },
+
+    reviews: {
+      type: [hallReviewSchema],
       default: [],
     },
   },

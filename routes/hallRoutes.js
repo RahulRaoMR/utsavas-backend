@@ -260,6 +260,54 @@ const buildVendorAnalyticsPayload = (halls, monthValue) => {
   };
 };
 
+const INVALID_JSON_FIELD = Symbol("INVALID_JSON_FIELD");
+
+const parseStructuredField = (value, fallback = {}) => {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return INVALID_JSON_FIELD;
+    }
+  }
+
+  if (typeof value === "object") {
+    return value;
+  }
+
+  return fallback;
+};
+
+const parseMultipartArray = (fieldName, maxCount) => (req, res, next) => {
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+
+  if (contentType.includes("multipart/form-data")) {
+    return upload.array(fieldName, maxCount)(req, res, (error) => {
+      if (!error) {
+        next();
+        return;
+      }
+
+      const message =
+        error.code === "LIMIT_FILE_SIZE"
+          ? "Each uploaded image must be 5MB or smaller"
+          : error.message || "Image upload failed";
+
+      res.status(400).json({ message });
+    });
+  }
+
+  req.files = Array.isArray(req.files) ? req.files : [];
+  return next();
+};
+
+const parseHallUpdateRequest = parseMultipartArray("images", 10);
+const parseHallReviewUpload = parseMultipartArray("reviewImages", 5);
+
 /* =====================================================
    SEARCH HALLS (MAIN FILTER API)
 ===================================================== */
@@ -687,6 +735,76 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+router.post("/:id/reviews", parseHallReviewUpload, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      status: "approved",
+    });
+
+    if (!hall) {
+      return res.status(404).json({ message: "Hall not found" });
+    }
+
+    const requestBody =
+      req.body && typeof req.body === "object" ? req.body : {};
+    const reviewerName = String(requestBody.reviewerName || "").trim();
+    const reviewerEmail = String(requestBody.reviewerEmail || "")
+      .trim()
+      .toLowerCase();
+    const comment = String(requestBody.comment || "").trim();
+    const rating = Number(requestBody.rating);
+
+    if (!reviewerName) {
+      return res.status(400).json({ message: "Reviewer name is required" });
+    }
+
+    if (!comment) {
+      return res.status(400).json({ message: "Review comment is required" });
+    }
+
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: "Rating must be between 1 and 5" });
+    }
+
+    const photoUrls = Array.isArray(req.files)
+      ? req.files
+          .map((file) => file.location || `/uploads/halls/${file.filename}`)
+          .filter(Boolean)
+      : [];
+
+    hall.reviews.push({
+      reviewerName,
+      reviewerEmail,
+      rating,
+      comment,
+      photos: photoUrls,
+    });
+
+    await hall.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Review added successfully",
+      review: hall.reviews[hall.reviews.length - 1],
+      hall,
+    });
+  } catch (error) {
+    if (error?.name === "ValidationError") {
+      return res.status(400).json({ message: error.message });
+    }
+
+    console.error("ADD HALL REVIEW ERROR", error);
+    return res.status(500).json({ message: "Failed to add review" });
+  }
+});
+
 router.post("/:id/analytics/hall-view", async (req, res) => {
   try {
     const { id } = req.params;
@@ -791,12 +909,14 @@ router.delete("/:id", requireVendor, async (req, res) => {
 /* =====================================================
    VENDOR UPDATE HALL
 ===================================================== */
-router.put("/:id", requireVendor, async (req, res) => {
+router.put("/:id", requireVendor, parseHallUpdateRequest, async (req, res) => {
   try {
     const { id } = req.params;
+    const requestBody =
+      req.body && typeof req.body === "object" ? req.body : {};
     const ownership = ensureVendorOwnership(
       req,
-      req.query.vendorId || req.body?.vendorId
+      req.query.vendorId || requestBody.vendorId
     );
 
     if (!ownership.ok) {
@@ -827,10 +947,22 @@ router.put("/:id", requireVendor, async (req, res) => {
       pricePerEvent,
       pricePerPlate,
       listingPlan,
-      address,
-      location,
-      features,
-    } = req.body;
+      address: rawAddress,
+      location: rawLocation,
+      features: rawFeatures,
+    } = requestBody;
+
+    const address = parseStructuredField(rawAddress, null);
+    const location = parseStructuredField(rawLocation, null);
+    const features = parseStructuredField(rawFeatures, null);
+
+    if (
+      address === INVALID_JSON_FIELD ||
+      location === INVALID_JSON_FIELD ||
+      features === INVALID_JSON_FIELD
+    ) {
+      return res.status(400).json({ message: "Invalid JSON data" });
+    }
 
     hall.hallName = hallName?.toString().trim() || hall.hallName;
     hall.category = category
@@ -871,6 +1003,12 @@ router.put("/:id", requireVendor, async (req, res) => {
         ...hall.features,
         ...features,
       };
+    }
+
+    if (Array.isArray(req.files) && req.files.length > 0) {
+      hall.images = req.files
+        .map((file) => file.location || `/uploads/halls/${file.filename}`)
+        .filter(Boolean);
     }
 
     await hall.save();

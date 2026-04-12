@@ -9,7 +9,12 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+const s3UploadsEnabled =
+  String(process.env.USE_S3_UPLOADS || "").toLowerCase() === "true" ||
+  String(process.env.NODE_ENV || "").toLowerCase() === "production";
+
 const hasWorkingS3Config =
+  s3UploadsEnabled &&
   Boolean(process.env.AWS_BUCKET_NAME) &&
   Boolean(process.env.AWS_REGION) &&
   Boolean(process.env.AWS_ACCESS_KEY_ID) &&
