@@ -47,6 +47,54 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    phoneRevealHallIds: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Hall",
+        },
+      ],
+      default: [],
+    },
+    phoneRevealSubscriptionActive: {
+      type: Boolean,
+      default: false,
+    },
+    phoneRevealSubscriptionAmount: {
+      type: Number,
+      default: 0,
+    },
+    phoneRevealSubscriptionActivatedAt: {
+      type: Date,
+      default: null,
+    },
+    phoneRevealPaymentOrderId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    phoneRevealPaymentId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    phoneRevealPaymentStatus: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    phoneRevealPaymentGstAmount: {
+      type: Number,
+      default: 0,
+    },
+    phoneRevealPaymentTotalAmount: {
+      type: Number,
+      default: 0,
+    },
+    phoneRevealPaymentVerifiedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

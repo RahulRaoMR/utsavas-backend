@@ -2,12 +2,17 @@ const express = require("express");
 const mongoose = require("mongoose");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
+const User = require("../models/User");
 const {
   getListingPlanDetails,
   getListingPlanMonthlyCost,
   normalizeListingPlan,
   sortHallsByListingPriority,
 } = require("../utils/listingPlan");
+const {
+  FREE_PHONE_REVEAL_LIMIT,
+  getPhoneRevealPricing,
+} = require("../utils/phoneRevealPricing");
 const { normalizeVenueCategory } = require("../utils/venueCategory");
 const upload = require("../middleware/uploadToS3");
 const authMiddleware = require("../middleware/authMiddleware");
@@ -371,7 +376,7 @@ router.get("/search", async (req, res) => {
     }
 
     const halls = await Hall.find(filter)
-      .populate("vendor", "businessName phone")
+      .populate("vendor", "businessName")
       .lean();
 
     const sortedHalls = sortHallsByListingPriority(halls);
@@ -710,7 +715,7 @@ router.get("/:id", async (req, res) => {
   try {
     const hall = await Hall.findById(req.params.id).populate(
       "vendor",
-      "businessName ownerName phone email isOnline autoReplyEnabled"
+      "businessName ownerName email isOnline autoReplyEnabled"
     );
 
     if (!hall) {
@@ -732,6 +737,111 @@ router.get("/:id", async (req, res) => {
   } catch (error) {
     console.error("FETCH HALL ERROR", error);
     res.status(500).json({ message: "Failed to fetch hall" });
+  }
+});
+
+router.post("/:id/reveal-phone", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const phoneRevealPricing = getPhoneRevealPricing();
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
+    const [hall, user] = await Promise.all([
+      Hall.findOne({
+        _id: new mongoose.Types.ObjectId(id),
+        status: "approved",
+      }).populate("vendor", "phone"),
+      User.findById(req.user.id),
+    ]);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (!hall || !hall.vendor?.phone) {
+      return res.status(404).json({ message: "Hall phone number is unavailable" });
+    }
+
+    const revealedHallIds = Array.isArray(user.phoneRevealHallIds)
+      ? user.phoneRevealHallIds.map((hallId) => String(hallId))
+      : [];
+    const hallId = String(hall._id);
+    const alreadyUnlocked = revealedHallIds.includes(hallId);
+    const subscriptionActive = Boolean(user.phoneRevealSubscriptionActive);
+
+    if (
+      !subscriptionActive &&
+      !alreadyUnlocked &&
+      revealedHallIds.length >= FREE_PHONE_REVEAL_LIMIT
+    ) {
+      return res.status(402).json({
+        success: false,
+        requiresPayment: true,
+        requiresSubscription: true,
+        unlockAmount: phoneRevealPricing.baseAmount,
+        subscriptionAmount: phoneRevealPricing.baseAmount,
+        gstRate: phoneRevealPricing.gstRate,
+        gstAmount: phoneRevealPricing.gstAmount,
+        totalAmount: phoneRevealPricing.totalAmount,
+        currency: phoneRevealPricing.currency,
+        freeLimit: FREE_PHONE_REVEAL_LIMIT,
+        usedFreeViews: revealedHallIds.length,
+        message:
+          "Your 2 free hall phone numbers are used. Pay Rs 500 + GST to unlock all hall phone numbers.",
+      });
+    }
+
+    if (!subscriptionActive && !alreadyUnlocked) {
+      user.phoneRevealHallIds = [...(user.phoneRevealHallIds || []), hall._id];
+      await user.save();
+    }
+
+    try {
+      await incrementHallAnalyticsMetric(hall._id, "phoneViews");
+    } catch (analyticsError) {
+      console.error("TRACK PHONE REVEAL ERROR", analyticsError);
+    }
+
+    const usedFreeViews = subscriptionActive
+      ? revealedHallIds.length
+      : Array.isArray(user.phoneRevealHallIds)
+      ? user.phoneRevealHallIds.length
+      : 0;
+    const remainingFreeViews = subscriptionActive
+      ? null
+      : Math.max(FREE_PHONE_REVEAL_LIMIT - usedFreeViews, 0);
+
+    return res.json({
+      success: true,
+      phone: hall.vendor.phone,
+      alreadyUnlocked,
+      requiresPayment: false,
+      subscriptionActive,
+      unlockAmount: phoneRevealPricing.baseAmount,
+      subscriptionAmount: phoneRevealPricing.baseAmount,
+      gstRate: phoneRevealPricing.gstRate,
+      gstAmount: phoneRevealPricing.gstAmount,
+      totalAmount: phoneRevealPricing.totalAmount,
+      currency: phoneRevealPricing.currency,
+      freeLimit: FREE_PHONE_REVEAL_LIMIT,
+      usedFreeViews,
+      remainingFreeViews,
+      message: subscriptionActive
+        ? "Phone number unlocked through your paid access."
+        : alreadyUnlocked
+        ? "Phone number unlocked."
+        : remainingFreeViews > 0
+        ? `Phone number unlocked. ${remainingFreeViews} free hall number${
+            remainingFreeViews === 1 ? "" : "s"
+          } left.`
+        : "Phone number unlocked. Your 2 free hall numbers are used now. Pay Rs 500 + GST to unlock all hall phone numbers.",
+    });
+  } catch (error) {
+    console.error("REVEAL PHONE ERROR", error);
+    return res.status(500).json({ message: "Failed to reveal hall phone number" });
   }
 });
 

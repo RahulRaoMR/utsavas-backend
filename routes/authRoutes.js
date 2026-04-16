@@ -7,6 +7,7 @@ const {
   normalizePhoneForStorage,
   sendFast2SmsOtp,
 } = require("../utils/fast2sms");
+const { FREE_PHONE_REVEAL_LIMIT } = require("../utils/phoneRevealPricing");
 
 const router = express.Router();
 
@@ -38,6 +39,12 @@ const serializeUser = (user) => {
     city: user.city || "",
     country: user.country || "",
     gender: user.gender || "",
+    phoneRevealSubscriptionActive: Boolean(user.phoneRevealSubscriptionActive),
+    phoneRevealSubscriptionAmount: Number(user.phoneRevealSubscriptionAmount) || 0,
+    phoneRevealFreeUsed: Array.isArray(user.phoneRevealHallIds)
+      ? user.phoneRevealHallIds.length
+      : 0,
+    phoneRevealFreeLimit: FREE_PHONE_REVEAL_LIMIT,
   };
 };
 
