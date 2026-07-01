@@ -79,6 +79,57 @@ const vendorSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+
+    verificationDocuments: {
+      gstNumber: {
+        type: String,
+        trim: true,
+        uppercase: true,
+      },
+
+      gstCertificateUrl: {
+        type: String,
+        trim: true,
+      },
+
+      panNumber: {
+        type: String,
+        trim: true,
+        uppercase: true,
+      },
+
+      panCardUrl: {
+        type: String,
+        trim: true,
+      },
+
+      identityProofType: {
+        type: String,
+        enum: ["aadhaar-card", "passport", "driving-license", ""],
+        default: "",
+      },
+
+      identityProofUrl: {
+        type: String,
+        trim: true,
+      },
+
+      addressProofType: {
+        type: String,
+        enum: ["electricity-bill", "rental-agreement", "shop-license", ""],
+        default: "",
+      },
+
+      addressProofUrl: {
+        type: String,
+        trim: true,
+      },
+
+      submittedAt: {
+        type: Date,
+        default: null,
+      },
+    },
   },
   {
     timestamps: true,

@@ -1,5 +1,6 @@
 const multer = require("multer");
 const multerS3 = require("multer-s3");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const s3 = require("../lib/s3");
@@ -22,22 +23,52 @@ const hasWorkingS3Config =
   !String(process.env.AWS_ACCESS_KEY_ID).includes("YOUR_REAL_KEY") &&
   !String(process.env.AWS_SECRET_ACCESS_KEY).includes("YOUR_REAL_SECRET");
 
+const allowedImageTypes = new Map([
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
+
+const buildSafeImageFileName = (originalName, fallbackName = "hall-image") => {
+  const ext = path.extname(originalName || "").toLowerCase();
+  const baseName = path
+    .basename(originalName || fallbackName, ext)
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 80);
+  const uniquePart =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : crypto.randomBytes(16).toString("hex");
+
+  return `${Date.now()}-${uniquePart}-${baseName || fallbackName}${ext}`;
+};
+
+const fileFilter = (req, file, cb) => {
+  const ext = path.extname(file.originalname || "").toLowerCase();
+  const mimeType = String(file.mimetype || "").toLowerCase();
+
+  if (allowedImageTypes.get(ext) === mimeType) {
+    cb(null, true);
+    return;
+  }
+
+  cb(new Error("Only JPG, JPEG, PNG, or WEBP image files are allowed"));
+};
+
 const storage = hasWorkingS3Config
   ? multerS3({
       s3: s3,
       bucket: process.env.AWS_BUCKET_NAME,
+      contentType: multerS3.AUTO_CONTENT_TYPE,
 
       metadata: (req, file, cb) => {
         cb(null, { fieldName: file.fieldname });
       },
 
       key: (req, file, cb) => {
-        const fileName =
-          Date.now() +
-          "-" +
-          file.originalname.replace(/\s+/g, "_");
-
-        cb(null, `halls/${fileName}`);
+        cb(null, `halls/${buildSafeImageFileName(file.originalname)}`);
       },
     })
   : multer.diskStorage({
@@ -45,17 +76,13 @@ const storage = hasWorkingS3Config
         cb(null, uploadsDir);
       },
       filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname || "");
-        const name = path
-          .basename(file.originalname || "hall-image", ext)
-          .replace(/\s+/g, "_");
-
-        cb(null, `${Date.now()}-${name}${ext}`);
+        cb(null, buildSafeImageFileName(file.originalname));
       },
     });
 
 const upload = multer({
   storage,
+  fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 

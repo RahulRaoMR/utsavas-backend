@@ -64,6 +64,15 @@ router.post("/register", async (req, res) => {
       password,
     } = req.body;
 
+    firstName = String(firstName || "").trim();
+    lastName = String(lastName || "").trim();
+    email = String(email || "").toLowerCase().trim();
+    phone = String(phone || "").trim();
+    city = String(city || "").trim();
+    country = String(country || "").trim();
+    gender = String(gender || "").trim();
+    password = String(password || "");
+
     if (!firstName || !email || !phone || !password) {
       return res.status(400).json({
         success: false,
@@ -71,7 +80,6 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    email = email.toLowerCase().trim();
     const cleanPhone = normalizePhone(phone);
 
     const existing = await User.findOne({
@@ -126,9 +134,10 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, phone, identifier, emailOrPhone, password } = req.body;
-    const loginValue = email || phone || identifier || emailOrPhone;
+    const loginValue = String(email || phone || identifier || emailOrPhone || "").trim();
+    const passwordValue = String(password || "");
 
-    if (!loginValue || !password) {
+    if (!loginValue || !passwordValue) {
       return res.status(400).json({
         success: false,
         message: "Email/Phone and password required",
@@ -137,7 +146,7 @@ router.post("/login", async (req, res) => {
 
     let user;
 
-    if (String(loginValue).includes("@")) {
+    if (loginValue.includes("@")) {
       user = await User.findOne({
         email: loginValue.toLowerCase().trim(),
       });
@@ -148,18 +157,20 @@ router.post("/login", async (req, res) => {
     }
 
     if (!user) {
-      return res.status(404).json({
+      console.warn("USER LOGIN FAILED: unknown account", { loginValue });
+      return res.status(401).json({
         success: false,
-        message: "User not found",
+        message: "Invalid credentials",
       });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(passwordValue, user.password);
 
     if (!isMatch) {
+      console.warn("USER LOGIN FAILED: invalid password", { userId: String(user._id) });
       return res.status(401).json({
         success: false,
-        message: "Invalid password",
+        message: "Invalid credentials",
       });
     }
 

@@ -6,6 +6,7 @@ const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
 const generateToken = require("../utils/generateToken");
 const authMiddleware = require("../middleware/authMiddleware");
+const uploadVendorDocuments = require("../middleware/uploadVendorDocuments");
 const { sendVendorPasswordResetOtpEmail } = require("../utils/vendorPasswordResetEmail");
 const { getMailErrorMessage } = require("../utils/bookingConfirmationEmail");
 
@@ -33,10 +34,85 @@ const VALID_VENDOR_SERVICE_TYPES = [
   "service",
 ];
 
+const VALID_IDENTITY_PROOF_TYPES = [
+  "aadhaar-card",
+  "passport",
+  "driving-license",
+];
+
+const VALID_ADDRESS_PROOF_TYPES = [
+  "electricity-bill",
+  "rental-agreement",
+  "shop-license",
+];
+
+const VENDOR_DOCUMENT_UPLOAD_FIELDS = [
+  { name: "gstCertificate", maxCount: 1 },
+  { name: "panCardDocument", maxCount: 1 },
+  { name: "identityProofDocument", maxCount: 1 },
+  { name: "addressProofDocument", maxCount: 1 },
+];
+
+const uploadVendorDocumentFields = uploadVendorDocuments.fields(
+  VENDOR_DOCUMENT_UPLOAD_FIELDS
+);
+
+const normalizeProofType = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const normalizeUppercaseText = (value) =>
+  String(value || "")
+    .trim()
+    .toUpperCase();
+
+const getUploadedFileUrl = (files, fieldName) => {
+  const file = files?.[fieldName]?.[0];
+
+  if (!file) {
+    return "";
+  }
+
+  return file.location || `/uploads/vendor-documents/${file.filename}`;
+};
+
+const GSTIN_PATTERN =
+  /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
+const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+const parseVendorRegisterUpload = (req, res, next) => {
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+
+  if (!contentType.includes("multipart/form-data")) {
+    next();
+    return;
+  }
+
+  uploadVendorDocumentFields(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    const message =
+      error.code === "LIMIT_FILE_SIZE"
+        ? "Each legal document must be 5MB or smaller"
+        : error.message || "Document upload failed";
+
+    res.status(400).json({
+      success: false,
+      message,
+    });
+  });
+};
+
 const serializeVendor = (vendor) => {
   if (!vendor) {
     return null;
   }
+
+  const verificationDocuments = vendor.verificationDocuments || {};
 
   return {
     _id: vendor._id,
@@ -53,6 +129,17 @@ const serializeVendor = (vendor) => {
       typeof vendor.autoReplyEnabled === "boolean"
         ? vendor.autoReplyEnabled
         : true,
+    verificationDocuments: {
+      gstNumber: verificationDocuments.gstNumber || "",
+      gstCertificateUrl: verificationDocuments.gstCertificateUrl || "",
+      panNumber: verificationDocuments.panNumber || "",
+      panCardUrl: verificationDocuments.panCardUrl || "",
+      identityProofType: verificationDocuments.identityProofType || "",
+      identityProofUrl: verificationDocuments.identityProofUrl || "",
+      addressProofType: verificationDocuments.addressProofType || "",
+      addressProofUrl: verificationDocuments.addressProofUrl || "",
+      submittedAt: verificationDocuments.submittedAt || null,
+    },
     createdAt: vendor.createdAt || null,
     updatedAt: vendor.updatedAt || null,
   };
@@ -73,8 +160,24 @@ router.get("/test", (req, res) => {
 /* =========================
    VENDOR REGISTER
 ========================= */
-router.post("/register", async (req, res) => {
+router.post("/register", parseVendorRegisterUpload, async (req, res) => {
   try {
+    const requestBody =
+      req.body && typeof req.body === "object" ? req.body : {};
+
+    if (Object.keys(requestBody).length === 0) {
+      console.error("REGISTER ERROR: empty request body", {
+        contentType: req.headers["content-type"] || "",
+        hasFiles: Boolean(req.files && Object.keys(req.files).length > 0),
+      });
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Registration form data is missing. Please fill the form again and re-upload the documents.",
+      });
+    }
+
     let {
       businessName,
       ownerName,
@@ -83,7 +186,11 @@ router.post("/register", async (req, res) => {
       city,
       serviceType,
       password,
-    } = req.body;
+      gstNumber,
+      panNumber,
+      identityProofType,
+      addressProofType,
+    } = requestBody;
 
     businessName = businessName?.toString().trim();
     ownerName = ownerName?.toString().trim();
@@ -91,6 +198,21 @@ router.post("/register", async (req, res) => {
     email = email?.toString().toLowerCase().trim();
     city = city?.toString().trim();
     serviceType = serviceType?.toString().trim().toLowerCase();
+    gstNumber = normalizeUppercaseText(gstNumber);
+    panNumber = normalizeUppercaseText(panNumber);
+    identityProofType = normalizeProofType(identityProofType);
+    addressProofType = normalizeProofType(addressProofType);
+
+    const gstCertificateUrl = getUploadedFileUrl(req.files, "gstCertificate");
+    const panCardUrl = getUploadedFileUrl(req.files, "panCardDocument");
+    const identityProofUrl = getUploadedFileUrl(
+      req.files,
+      "identityProofDocument"
+    );
+    const addressProofUrl = getUploadedFileUrl(
+      req.files,
+      "addressProofDocument"
+    );
 
     if (
       !businessName ||
@@ -99,11 +221,19 @@ router.post("/register", async (req, res) => {
       !email ||
       !city ||
       !serviceType ||
-      !password
+      !password ||
+      !gstNumber ||
+      !gstCertificateUrl ||
+      !panNumber ||
+      !panCardUrl ||
+      !identityProofType ||
+      !identityProofUrl ||
+      !addressProofType ||
+      !addressProofUrl
     ) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required",
+        message: "All registration and legal document fields are required",
       });
     }
 
@@ -111,6 +241,34 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Invalid service type",
+      });
+    }
+
+    if (!GSTIN_PATTERN.test(gstNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid GSTIN",
+      });
+    }
+
+    if (!PAN_PATTERN.test(panNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid PAN number",
+      });
+    }
+
+    if (!VALID_IDENTITY_PROOF_TYPES.includes(identityProofType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid identity proof type",
+      });
+    }
+
+    if (!VALID_ADDRESS_PROOF_TYPES.includes(addressProofType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid address proof type",
       });
     }
 
@@ -134,6 +292,17 @@ router.post("/register", async (req, res) => {
       serviceType,
       password,
       status: "pending",
+      verificationDocuments: {
+        gstNumber,
+        gstCertificateUrl,
+        panNumber,
+        panCardUrl,
+        identityProofType,
+        identityProofUrl,
+        addressProofType,
+        addressProofUrl,
+        submittedAt: new Date(),
+      },
     });
 
     await vendor.save();
@@ -174,21 +343,24 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { identifier, password } = req.body;
+    const normalizedIdentifier = String(identifier || "").trim().toLowerCase();
+    const passwordValue = String(password || "");
 
-    if (!identifier || !password) {
+    if (!normalizedIdentifier || !passwordValue) {
       return res.status(400).json({
         success: false,
         message: "Email/Phone and password required",
       });
     }
 
-    const normalizedIdentifier = String(identifier).trim().toLowerCase();
-
     const vendor = await Vendor.findOne({
-      $or: [{ email: normalizedIdentifier }, { phone: String(identifier).trim() }],
+      $or: [{ email: normalizedIdentifier }, { phone: String(identifier || "").trim() }],
     });
 
     if (!vendor) {
+      console.warn("VENDOR LOGIN FAILED: unknown account", {
+        identifier: normalizedIdentifier,
+      });
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
@@ -196,15 +368,21 @@ router.post("/login", async (req, res) => {
     }
 
     if (vendor.status !== "approved") {
+      console.warn("VENDOR LOGIN BLOCKED: account not approved", {
+        vendorId: String(vendor._id),
+      });
       return res.status(403).json({
         success: false,
         message: "Account not approved by admin yet",
       });
     }
 
-    const isMatch = await vendor.comparePassword(password);
+    const isMatch = await vendor.comparePassword(passwordValue);
 
     if (!isMatch) {
+      console.warn("VENDOR LOGIN FAILED: invalid password", {
+        vendorId: String(vendor._id),
+      });
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",

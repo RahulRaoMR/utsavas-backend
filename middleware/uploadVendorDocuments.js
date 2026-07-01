@@ -1,5 +1,6 @@
 const multer = require("multer");
 const multerS3 = require("multer-s3");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const s3 = require("../lib/s3");
@@ -23,19 +24,25 @@ const hasWorkingS3Config =
   !String(process.env.AWS_SECRET_ACCESS_KEY).includes("YOUR_REAL_SECRET");
 
 const buildSafeFileName = (originalName, fallbackName) => {
-  const ext = path.extname(originalName || "");
+  const ext = path.extname(originalName || "").toLowerCase();
   const baseName = path
     .basename(originalName || fallbackName, ext)
     .replace(/\s+/g, "_")
-    .replace(/[^a-zA-Z0-9_-]/g, "");
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 80);
+  const uniquePart =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : crypto.randomBytes(16).toString("hex");
 
-  return `${Date.now()}-${baseName || fallbackName}${ext}`;
+  return `${Date.now()}-${uniquePart}-${baseName || fallbackName}${ext}`;
 };
 
 const storage = hasWorkingS3Config
   ? multerS3({
       s3,
       bucket: process.env.AWS_BUCKET_NAME,
+      contentType: multerS3.AUTO_CONTENT_TYPE,
       metadata: (req, file, cb) => {
         cb(null, { fieldName: file.fieldname });
       },
@@ -64,20 +71,19 @@ const storage = hasWorkingS3Config
       },
     });
 
-const allowedMimeTypes = new Set([
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
+const allowedDocumentTypes = new Map([
+  [".pdf", "application/pdf"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
 ]);
-
-const allowedExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".webp"]);
 
 const fileFilter = (req, file, cb) => {
   const ext = path.extname(file.originalname || "").toLowerCase();
   const mimeType = String(file.mimetype || "").toLowerCase();
 
-  if (allowedMimeTypes.has(mimeType) || allowedExtensions.has(ext)) {
+  if (allowedDocumentTypes.get(ext) === mimeType) {
     cb(null, true);
     return;
   }

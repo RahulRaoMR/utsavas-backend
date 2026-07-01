@@ -9,6 +9,10 @@ const authMiddleware = require("../middleware/authMiddleware");
 
 const { requireAdmin } = authMiddleware;
 const router = express.Router();
+const DISALLOWED_HTML_PATTERN = /<[^>]*>|javascript:/i;
+
+const hasUnsafeHtml = (value) =>
+  typeof value === "string" && DISALLOWED_HTML_PATTERN.test(value);
 
 const normalizeAnalyticsDay = (value = new Date()) => {
   const date = new Date(value);
@@ -204,8 +208,8 @@ const buildAdminAnalyticsPayload = (halls, monthValue, selectedHallId) => {
 router.post("/login", async (req, res) => {
   try {
     let { email, password } = req.body;
-    email = email?.toString().toLowerCase().trim();
-    password = password?.toString();
+    email = String(email || "").toLowerCase().trim();
+    password = String(password || "");
 
     if (!email || !password) {
       return res.status(400).json({
@@ -216,16 +220,20 @@ router.post("/login", async (req, res) => {
     const admin = await Admin.findOne({ email });
 
     if (!admin) {
-      return res.status(404).json({
-        message: "Admin not found",
+      console.warn("ADMIN LOGIN FAILED: unknown account", { email });
+      return res.status(401).json({
+        message: "Invalid credentials",
       });
     }
 
     const isMatch = await admin.comparePassword(password);
 
     if (!isMatch) {
+      console.warn("ADMIN LOGIN FAILED: invalid password", {
+        adminId: String(admin._id),
+      });
       return res.status(401).json({
-        message: "Invalid password",
+        message: "Invalid credentials",
       });
     }
 
@@ -395,6 +403,13 @@ router.put("/halls/:id", async (req, res) => {
     }
 
     hall.hallName = hallName?.toString().trim() || hall.hallName;
+
+    if (hasUnsafeHtml(hall.hallName)) {
+      return res.status(400).json({
+        message: "Hall name cannot contain HTML or script content",
+      });
+    }
+
     hall.category = category
       ? normalizeVenueCategory(category)
       : hall.category;
@@ -566,7 +581,9 @@ router.get("/bookings", async (req, res) => {
 
       // ⭐ calendar
       checkIn: b.checkIn,
+      checkInTime: b.checkInTime || "09:00",
       checkOut: b.checkOut,
+      checkOutTime: b.checkOutTime || "21:00",
 
       // ⭐ payment safe defaults
       paymentMethod: b.paymentMethod || "venue",

@@ -11,6 +11,18 @@ let cachedTransporter = null;
 let cachedResendConfig = null;
 const SIMPLE_EMAIL_REGEX = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 const TIME_24_HOUR_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const TALME_COMPANY_DETAILS = Object.freeze({
+  legalName: "TALME TECHNOLOGIES PRIVATE LIMITED",
+  gstin: "29AAJCT8187F1ZO",
+  pan: "AAJCT8187F",
+  addressLines: [
+    "24, Vittal Mallya Rd, KG Halli",
+    "D' Souza Layout, Ashok Nagar, Bengaluru, Karnataka 560001",
+  ],
+  state: "Karnataka",
+  stateCode: "29",
+});
+const BOOKING_SERVICE_DESCRIPTION = "Venue booking services";
 
 function pickEnv(...keys) {
   for (const key of keys) {
@@ -101,8 +113,16 @@ function formatCurrency(amount) {
   return `Rs ${Number(amount || 0).toLocaleString("en-IN")}`;
 }
 
-function formatChargeLabel(rate, hsnCode = BOOKING_GST_HSN_CODE) {
-  return `GST (${Math.round(getBookingGstRate(rate) * 100)}%) - HSN/SAC ${hsnCode}`;
+function formatPercentage(rate) {
+  const percentage = Number(rate || 0) * 100;
+
+  if (!Number.isFinite(percentage)) {
+    return "0%";
+  }
+
+  return Number.isInteger(percentage)
+    ? `${percentage}%`
+    : `${percentage.toFixed(2).replace(/\.?0+$/, "")}%`;
 }
 
 function formatDate(value) {
@@ -172,6 +192,64 @@ function buildAddress(address = {}) {
   ]
     .filter(Boolean)
     .join(", ");
+}
+
+function normalizeStateName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[.]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function buildBookingTaxRows({
+  taxableAmount = 0,
+  gstAmount = 0,
+  gstRate = BOOKING_GST_RATE,
+  gstHsnCode = BOOKING_GST_HSN_CODE,
+  placeOfSupply = TALME_COMPANY_DETAILS.state,
+} = {}) {
+  const normalizedTaxableAmount = Number(taxableAmount) || 0;
+  const normalizedGstAmount = Number(gstAmount) || 0;
+  const normalizedGstRate = getBookingGstRate(gstRate, BOOKING_GST_RATE);
+  const isIntraStateSupply =
+    normalizeStateName(placeOfSupply) ===
+    normalizeStateName(TALME_COMPANY_DETAILS.state);
+
+  if (isIntraStateSupply) {
+    const halfRate = normalizedGstRate / 2;
+    const cgstAmount =
+      normalizedTaxableAmount > 0
+        ? Math.round(normalizedTaxableAmount * halfRate)
+        : 0;
+    const sgstAmount = Math.max(normalizedGstAmount - cgstAmount, 0);
+
+    return {
+      taxModeLabel: `CGST ${formatPercentage(halfRate)} + SGST ${formatPercentage(
+        halfRate
+      )}`,
+      taxRows: [
+        {
+          label: `CGST (${formatPercentage(halfRate)}) - HSN/SAC ${gstHsnCode}`,
+          amount: cgstAmount,
+        },
+        {
+          label: `SGST (${formatPercentage(halfRate)}) - HSN/SAC ${gstHsnCode}`,
+          amount: sgstAmount,
+        },
+      ],
+    };
+  }
+
+  return {
+    taxModeLabel: `IGST ${formatPercentage(normalizedGstRate)}`,
+    taxRows: [
+      {
+        label: `IGST (${formatPercentage(normalizedGstRate)}) - HSN/SAC ${gstHsnCode}`,
+        amount: normalizedGstAmount,
+      },
+    ],
+  };
 }
 
 function getTransporter() {
@@ -521,17 +599,28 @@ function buildMailData(booking) {
     String(booking.gstHsnCode || BOOKING_GST_HSN_CODE).trim() ||
     BOOKING_GST_HSN_CODE;
   const days = calculateDays(booking.checkIn, booking.checkOut);
+  const placeOfSupply =
+    String(hall?.address?.state || "").trim() || TALME_COMPANY_DETAILS.state;
+  const taxBreakdown = buildBookingTaxRows({
+    taxableAmount,
+    gstAmount,
+    gstRate: resolvedGstRate,
+    gstHsnCode,
+    placeOfSupply,
+  });
 
   return {
     bookingReference: String(booking._id),
     bookingUrl,
+    invoiceDate: formatDate(new Date()),
     hallName,
     venueAddress: venueAddress || "Venue address will be shared by the venue partner.",
     vendorName: vendor.businessName || "UTSAVAS Venue Partner",
     vendorPhone: vendor.phone || "Available from your venue partner after confirmation",
     vendorEmail: vendor.email || "utsavas@talme.in",
     customerName: booking.customerName || "Guest",
-    customerEmail: booking.customerEmail,
+    customerEmail: booking.customerEmail || "Not shared",
+    customerPhone: booking.phone || "Not shared",
     eventType: booking.eventType || "Event",
     guests: booking.guests || 0,
     checkIn: formatDate(booking.checkIn),
@@ -542,8 +631,8 @@ function buildMailData(booking) {
     paymentMethod:
       booking.paymentMethod === "online" ? "Paid online" : "Pay at venue",
     paymentStatus: booking.paymentStatus || "pending",
-    gstLabel: formatChargeLabel(resolvedGstRate, gstHsnCode),
     pricingBasis: booking.pricingBasis || "Venue pricing",
+    serviceDescription: `${BOOKING_SERVICE_DESCRIPTION} for ${hallName}`,
     venueAmount: formatCurrency(venueAmount),
     taxableAmount: formatCurrency(taxableAmount),
     gstAmount: formatCurrency(gstAmount),
@@ -551,6 +640,21 @@ function buildMailData(booking) {
     totalAmount: formatCurrency(totalAmount),
     couponCode: booking.couponCode || "No coupon applied",
     gstHsnCode,
+    placeOfSupply,
+    taxModeLabel: taxBreakdown.taxModeLabel,
+    taxRows: taxBreakdown.taxRows.map((row) => ({
+      label: row.label,
+      amount: formatCurrency(row.amount),
+    })),
+    supplierName: TALME_COMPANY_DETAILS.legalName,
+    supplierGstin: TALME_COMPANY_DETAILS.gstin,
+    supplierPan: TALME_COMPANY_DETAILS.pan,
+    supplierState: TALME_COMPANY_DETAILS.state,
+    supplierStateCode: TALME_COMPANY_DETAILS.stateCode,
+    supplierAddress: TALME_COMPANY_DETAILS.addressLines.join(", "),
+    supplierAddressLines: TALME_COMPANY_DETAILS.addressLines,
+    taxStructureNote:
+      "Intra-state bookings use CGST 9% + SGST 9%. Inter-state bookings use IGST 18%.",
   };
 }
 
@@ -559,7 +663,7 @@ function buildHtml(data) {
     <div style="font-family: Georgia, 'Times New Roman', serif; background:#f5f7fb; padding:32px; color:#183b63;">
       <div style="max-width:760px; margin:0 auto; background:#fffaf1; border-radius:24px; overflow:hidden; border:1px solid #dfe8f6;">
         <div style="background:linear-gradient(135deg,#5f97d6,#3f6fb6); color:#ffffff; padding:28px 32px;">
-          <div style="font-size:13px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.86;">UTSAVAS Confirmation</div>
+          <div style="font-size:13px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.86;">UTSAVAS Tax Invoice</div>
           <h1 style="margin:12px 0 8px; font-size:32px; line-height:1.2;">Your booking is confirmed at ${data.hallName}</h1>
           <p style="margin:0; font-size:16px; line-height:1.7;">Thanks ${data.customerName}. Your venue partner has approved the booking request.</p>
         </div>
@@ -568,6 +672,30 @@ function buildHtml(data) {
           <p style="margin:0 0 18px; color:#5e5551; font-size:16px; line-height:1.8;">
             Booking reference: <strong style="color:#183b63;">${data.bookingReference}</strong>
           </p>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+            <div style="background:#ffffff; border:1px solid #dfe8f6; border-radius:18px; padding:18px;">
+              <div style="font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:#7c6a52; margin-bottom:8px;">Supplier details</div>
+              <div style="font-size:20px; color:#183b63; font-weight:700;">${data.supplierName}</div>
+              <div style="font-size:14px; color:#5e5551; margin-top:8px; line-height:1.7;">
+                GSTIN: ${data.supplierGstin}<br />
+                PAN: ${data.supplierPan}<br />
+                State: ${data.supplierState} (${data.supplierStateCode})<br />
+                ${data.supplierAddressLines.join("<br />")}
+              </div>
+            </div>
+            <div style="background:#ffffff; border:1px solid #dfe8f6; border-radius:18px; padding:18px;">
+              <div style="font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:#7c6a52; margin-bottom:8px;">Invoice details</div>
+              <div style="font-size:15px; color:#183b63; line-height:1.8;">
+                <strong>Invoice date:</strong> ${data.invoiceDate}<br />
+                <strong>Customer:</strong> ${data.customerName}<br />
+                <strong>Email:</strong> ${data.customerEmail}<br />
+                <strong>Phone:</strong> ${data.customerPhone}<br />
+                <strong>Place of supply:</strong> ${data.placeOfSupply}<br />
+                <strong>Tax structure:</strong> ${data.taxModeLabel}
+              </div>
+            </div>
+          </div>
 
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
             <div style="background:#ffffff; border:1px solid #dfe8f6; border-radius:18px; padding:18px;">
@@ -601,13 +729,23 @@ function buildHtml(data) {
           <div style="background:#ffffff; border:1px solid #dfe8f6; border-radius:20px; padding:22px; margin-bottom:22px;">
             <h2 style="margin:0 0 16px; color:#183b63; font-size:24px;">Invoice summary</h2>
             <table style="width:100%; border-collapse:collapse; font-size:16px; line-height:1.8;">
+              <tr><td style="padding:8px 0; color:#5e5551;">Service description</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.serviceDescription}</td></tr>
+              <tr><td style="padding:8px 0; color:#5e5551;">HSN/SAC</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.gstHsnCode}</td></tr>
               <tr><td style="padding:8px 0; color:#5e5551;">Venue amount</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.venueAmount}</td></tr>
               <tr><td style="padding:8px 0; color:#5e5551;">Coupon code</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.couponCode}</td></tr>
               <tr><td style="padding:8px 0; color:#2f855a;">Coupon discount</td><td style="padding:8px 0; color:#2f855a; font-weight:700; text-align:right;">- ${data.discountAmount}</td></tr>
               <tr><td style="padding:8px 0; color:#5e5551;">Taxable value</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.taxableAmount}</td></tr>
-              <tr><td style="padding:8px 0; color:#5e5551;">${data.gstLabel}</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${data.gstAmount}</td></tr>
+              ${data.taxRows
+                .map(
+                  (row) =>
+                    `<tr><td style="padding:8px 0; color:#5e5551;">${row.label}</td><td style="padding:8px 0; color:#183b63; font-weight:700; text-align:right;">${row.amount}</td></tr>`
+                )
+                .join("")}
               <tr><td style="padding:12px 0 0; color:#183b63; font-size:20px; font-weight:700;">Total bill</td><td style="padding:12px 0 0; color:#183b63; font-size:20px; font-weight:700; text-align:right;">${data.totalAmount}</td></tr>
             </table>
+            <div style="margin-top:14px; font-size:13px; color:#7c6a52; line-height:1.6;">
+              ${data.taxStructureNote}
+            </div>
           </div>
 
           <div style="background:#edf4ff; border:1px solid #d2e3fb; border-radius:18px; padding:18px; color:#30402f; line-height:1.8;">
@@ -623,12 +761,13 @@ function buildHtml(data) {
 
 function buildText(data) {
   return [
-    `UTSAVAS booking confirmed: ${data.hallName}`,
+    `UTSAVAS tax invoice: ${data.hallName}`,
     ``,
     `Hello ${data.customerName},`,
     `Your booking is confirmed by the venue partner.`,
     ``,
     `Booking reference: ${data.bookingReference}`,
+    `Invoice date: ${data.invoiceDate}`,
     `Venue: ${data.hallName}`,
     `Location: ${data.venueAddress}`,
     `Check-in: ${data.checkIn}`,
@@ -641,13 +780,30 @@ function buildText(data) {
     `Pricing basis: ${data.pricingBasis}`,
     `Payment: ${data.paymentMethod} (${data.paymentStatus})`,
     ``,
+    `Supplier details`,
+    `${data.supplierName}`,
+    `GSTIN: ${data.supplierGstin}`,
+    `PAN: ${data.supplierPan}`,
+    `State: ${data.supplierState} (${data.supplierStateCode})`,
+    `Principal place of business: ${data.supplierAddress}`,
+    ``,
+    `Bill to`,
+    `${data.customerName}`,
+    `Email: ${data.customerEmail}`,
+    `Phone: ${data.customerPhone}`,
+    `Place of supply: ${data.placeOfSupply}`,
+    `Tax structure: ${data.taxModeLabel}`,
+    ``,
     `Invoice summary`,
+    `Service description: ${data.serviceDescription}`,
+    `HSN/SAC: ${data.gstHsnCode}`,
     `Venue amount: ${data.venueAmount}`,
     `Coupon code: ${data.couponCode}`,
     `Coupon discount: - ${data.discountAmount}`,
     `Taxable value: ${data.taxableAmount}`,
-    `${data.gstLabel}: ${data.gstAmount}`,
+    ...data.taxRows.map((row) => `${row.label}: ${row.amount}`),
     `Total bill: ${data.totalAmount}`,
+    `${data.taxStructureNote}`,
     ``,
     `Venue partner: ${data.vendorName}`,
     `Phone: ${data.vendorPhone}`,

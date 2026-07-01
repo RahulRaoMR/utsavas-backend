@@ -753,12 +753,27 @@ router.get("/hall/:hallId", async (req, res) => {
   try {
     const { hallId } = req.params;
 
-    const bookings = await Booking.find({ hall: hallId }).select(
-      "checkIn checkInTime checkOut checkOutTime status"
+    if (!mongoose.Types.ObjectId.isValid(hallId)) {
+      return res.status(400).json({
+        message: "Invalid hall id",
+      });
+    }
+
+    const hall = await Hall.findOne({
+      _id: new mongoose.Types.ObjectId(hallId),
+      status: "approved",
+    }).select(
+      "_id hallName address vendor offlineBookings"
     );
 
-    const hall = await Hall.findById(hallId).select(
-      "_id hallName address vendor offlineBookings"
+    if (!hall) {
+      return res.status(404).json({
+        message: "Hall not found",
+      });
+    }
+
+    const bookings = await Booking.find({ hall: hallId }).select(
+      "checkIn checkInTime checkOut checkOutTime status"
     );
 
     const offlineBookings = (hall?.offlineBookings || []).map((offlineBooking) =>

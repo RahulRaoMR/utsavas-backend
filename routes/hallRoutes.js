@@ -1,5 +1,6 @@
 const express = require("express");
 const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
 const Hall = require("../models/Hall");
 const Booking = require("../models/Booking");
 const User = require("../models/User");
@@ -19,8 +20,42 @@ const authMiddleware = require("../middleware/authMiddleware");
 
 const { requireAdmin, requireVendor } = authMiddleware;
 const router = express.Router();
+const DISALLOWED_HTML_PATTERN = /<[^>]*>|javascript:/i;
 
 const getAuthenticatedVendorId = (req) => String(req.user?.id || "");
+
+const hasUnsafeHtml = (value) =>
+  typeof value === "string" && DISALLOWED_HTML_PATTERN.test(value);
+
+const getOptionalRequestUser = (req) => {
+  const token = authMiddleware.getTokenFromRequest(req);
+
+  if (!token || !process.env.JWT_SECRET) {
+    return null;
+  }
+
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET);
+  } catch (error) {
+    console.warn("OPTIONAL AUTH TOKEN INVALID", error.message);
+    return null;
+  }
+};
+
+const canAccessNonPublicHall = (req, hall) => {
+  const user = getOptionalRequestUser(req);
+  const role = String(user?.role || "").toLowerCase();
+
+  if (role === "admin") {
+    return true;
+  }
+
+  if (role === "vendor") {
+    return String(hall?.vendor?._id || hall?.vendor || "") === String(user?.id || "");
+  }
+
+  return false;
+};
 
 const ensureVendorOwnership = (req, targetVendorId) => {
   const vendorId = getAuthenticatedVendorId(req);
@@ -419,6 +454,12 @@ router.post("/add", requireVendor, upload.array("images", 10), async (req, res) 
       });
     }
 
+    if (hasUnsafeHtml(hallName)) {
+      return res.status(400).json({
+        message: "Hall name cannot contain HTML or script content",
+      });
+    }
+
     let address = {};
     let location = {};
     let features = {};
@@ -713,12 +754,20 @@ router.put("/approve/:id", requireAdmin, async (req, res) => {
 ===================================================== */
 router.get("/:id", async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid hall id" });
+    }
+
     const hall = await Hall.findById(req.params.id).populate(
       "vendor",
       "businessName ownerName email isOnline autoReplyEnabled"
     );
 
     if (!hall) {
+      return res.status(404).json({ message: "Hall not found" });
+    }
+
+    if (hall.status !== "approved" && !canAccessNonPublicHall(req, hall)) {
       return res.status(404).json({ message: "Hall not found" });
     }
 
@@ -1075,6 +1124,13 @@ router.put("/:id", requireVendor, parseHallUpdateRequest, async (req, res) => {
     }
 
     hall.hallName = hallName?.toString().trim() || hall.hallName;
+
+    if (hasUnsafeHtml(hall.hallName)) {
+      return res.status(400).json({
+        message: "Hall name cannot contain HTML or script content",
+      });
+    }
+
     hall.category = category
       ? normalizeVenueCategory(category)
       : hall.category;

@@ -28,6 +28,9 @@ const allowedOrigins = (
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+const permissionsPolicy =
+  "accelerometer=(), autoplay=(), camera=(), clipboard-read=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(self), gyroscope=(), magnetometer=(), microphone=(), payment=(self), usb=()";
+
 const createJsonRateLimiter = ({ windowMs, max, message }) =>
   rateLimit({
     windowMs,
@@ -72,13 +75,62 @@ const paymentLimiter = createJsonRateLimiter({
   message: "Too many payment requests. Please try again shortly.",
 });
 
+const loginLimiter = createJsonRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 25,
+  message: "Too many failed attempts. Please try again in 15 minutes.",
+});
+
+const apiLimiter = createJsonRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: "Too many requests. Please try again later.",
+});
+
+const publicHallLimiter = createJsonRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  message: "Too many hall requests. Please try again in a few minutes.",
+});
+
 app.use(
   helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "default-src": ["'self'"],
+        "base-uri": ["'self'"],
+        "font-src": ["'self'", "https:", "data:"],
+        "form-action": ["'self'"],
+        "frame-ancestors": ["'none'"],
+        "img-src": ["'self'", "data:", "https:"],
+        "object-src": ["'none'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "https:", "'unsafe-inline'"],
+        "upgrade-insecure-requests": [],
+      },
+    },
     crossOriginResourcePolicy: {
       policy: "cross-origin",
     },
+    frameguard: {
+      action: "deny",
+    },
+    hsts: {
+      maxAge: 63072000,
+      includeSubDomains: true,
+      preload: true,
+    },
+    referrerPolicy: {
+      policy: "strict-origin-when-cross-origin",
+    },
   })
 );
+
+app.use((req, res, next) => {
+  res.setHeader("Permissions-Policy", permissionsPolicy);
+  next();
+});
 
 app.use(
   cors({
@@ -124,6 +176,13 @@ const chatRoutes = require("./routes/chatRoutes");
 /* =========================
    API ROUTES
 ========================= */
+
+app.use("/api", apiLimiter);
+app.use("/api/halls/public", publicHallLimiter);
+app.use("/api/halls/search", publicHallLimiter);
+app.use("/api/auth/login", loginLimiter);
+app.use("/api/vendor/login", loginLimiter);
+app.use("/api/admin/login", loginLimiter);
 
 app.use("/api/auth/forgot-password", authForgotPasswordLimiter);
 app.use("/api/vendor/forgot-password", vendorForgotPasswordLimiter);
